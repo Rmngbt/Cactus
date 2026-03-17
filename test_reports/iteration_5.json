@@ -1,0 +1,94 @@
+{
+  "summary": "Comprehensive testing of new Cactus game features. All 36 backend tests passed. Fixed bug where bot's final turn didn't trigger game end. All new features verified working: username-based login, num_rounds config, round display, special card auto-activation, skip_special action, and stats page.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "bugs_fixed": [
+    {
+      "file": "/app/backend/server.py",
+      "function": "execute_bot_turn()",
+      "issue": "Bot's final turn after cactus call did not trigger game end (phase stuck at 'playing')",
+      "root_cause": "execute_bot_turn() called advance_turn() which set round_ended=True, but didn't call end_round_and_update_stats()",
+      "fix": "Added check for round_ended after advance_turn() in execute_bot_turn() to call end_round_and_update_stats()"
+    },
+    {
+      "file": "/app/backend/tests/test_cactus_features.py",
+      "issue": "Test fixtures used email-based login but backend now requires username",
+      "fix": "Updated auth_token and test_user_info fixtures to use username='testuser123'"
+    },
+    {
+      "file": "/app/backend/tests/test_cactus_game.py",
+      "issue": "Same email-based login issue in fixtures",
+      "fix": "Updated fixtures to use username-based login"
+    }
+  ],
+
+  "test_report_links": [
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/test_cactus_features.py",
+    "/app/backend/tests/test_cactus_game.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/pytest_results_new_features.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "Username-based login properly implemented with case-insensitive regex matching",
+    "num_rounds config correctly stored in room.config and used by end_round_and_update_stats",
+    "Special card auto-activation (awaiting_special_action flag) works for discard_drawn and exchange actions",
+    "skip_special action properly clears special state and advances turn",
+    "Stats are correctly updated when game_over is true in end_round_and_update_stats"
+  ],
+
+  "updated_files": [
+    "/app/backend/server.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/test_cactus_features.py",
+    "/app/backend/tests/test_cactus_game.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (36/36 passed, 4 skipped due to random cards)",
+    "frontend": "100% (All tested flows working)"
+  },
+
+  "test_credentials": {
+    "username": "testuser123",
+    "password": "test123"
+  },
+
+  "seed_data_creation": "Using existing test user testuser123",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "All new features tested: (1) Login now uses 'username' field instead of 'email', (2) num_rounds parameter available in create room dialog and stored in config, (3) Round display shows 'Manche: X/Y' in GameBoard top-right, (4) Special cards (8, 10, J) auto-activate by setting awaiting_special_action=true, (5) skip_special action clears special state and advances turn, (6) Stats page shows games_played, wins, total_score, perfect_cactus_count with charts and achievements.",
+
+  "features_tested": {
+    "login_with_username": "PASSED - Frontend uses 'Pseudo' label, backend accepts 'username' field",
+    "num_rounds_config": "PASSED - Slider in create dialog, stored in room.config.num_rounds",
+    "round_display": "PASSED - game_state.round shows current round, room.config.num_rounds for total",
+    "special_card_auto_activation": "PASSED - awaiting_special_action set when 8/10/J discarded or exchanged",
+    "skip_special_action": "PASSED - Clears special state and advances turn",
+    "stats_page": "PASSED - Shows all stats with bar/pie charts and achievements",
+    "game_end_after_cactus": "PASSED (FIXED) - Game properly ends after bot's final turn"
+  },
+
+  "rca_of_issue": {
+    "bug": "Game didn't end after bot's final turn following cactus call",
+    "root_cause": "execute_bot_turn() called advance_turn() which sets round_ended=True when remaining_final_turns reaches 0, but didn't check for round_ended and call end_round_and_update_stats() like the game_action endpoint does",
+    "impact": "Game phase remained 'playing' instead of transitioning to 'ended', stats never updated",
+    "fix_applied": "Added the same round_end check logic to execute_bot_turn() after advance_turn() call",
+    "verification": "Tests now pass - game ends properly with phase='ended' and game_over=true after bot's final turn"
+  }
+}

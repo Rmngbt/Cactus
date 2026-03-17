@@ -1,0 +1,137 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@400;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+    margin: 0;
+    font-family: 'Nunito', -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+}
+
+code {
+    font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+/* Hide "Made with Emergent" badge globally except on admin page */
+body:not(.admin-page) [class*="emergent"],
+body:not(.admin-page) [class*="Emergent"],
+body:not(.admin-page) [id*="emergent"],
+body:not(.admin-page) [id*="Emergent"],
+body:not(.admin-page) div[style*="position: fixed"][style*="bottom"],
+body:not(.admin-page) div[style*="position: fixed"][style*="right"] {
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+@layer base {
+    :root {
+        --background: 40 30% 95%;
+        --foreground: 0 0% 10%;
+        --card: 0 0% 100%;
+        --card-foreground: 0 0% 10%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 0 0% 10%;
+        --primary: 174 50% 54%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 28 75% 65%;
+        --secondary-foreground: 0 0% 10%;
+        --muted: 40 20% 88%;
+        --muted-foreground: 0 0% 45%;
+        --accent: 130 50% 50%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 40 15% 80%;
+        --input: 40 15% 85%;
+        --ring: 174 50% 54%;
+        --radius: 0.75rem;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* Custom desert theme animations */
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+}
+
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 20px rgba(72, 201, 176, 0.3); }
+    50% { box-shadow: 0 0 30px rgba(72, 201, 176, 0.6); }
+}
+
+.cactus-card {
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.cactus-card:hover {
+    transform: translateY(-5px) rotate(2deg);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+}
+
+.desert-button {
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.desert-button::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.desert-button:hover::before {
+    width: 300px;
+    height: 300px;
+}
+
+.desert-button:hover {
+    transform: scale(1.05);
+}
+
+.floating-cactus {
+    animation: float 3s ease-in-out infinite;
+}
+
+.card-flip {
+    transition: transform 0.6s;
+    transform-style: preserve-3d;
+}
+
+.card-flip.flipped {
+    transform: rotateY(180deg);
+}
+
+.game-card-front,
+.game-card-back {
+    backface-visibility: hidden;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+}
+
+.game-card-back {
+    transform: rotateY(180deg);
+}

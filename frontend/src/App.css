@@ -1,0 +1,151 @@
+.App {
+  min-height: 100vh;
+  background: linear-gradient(to bottom, #5DADE2, #48C9B0);
+  position: relative;
+}
+
+.desert-bg {
+  background: linear-gradient(
+    to bottom,
+    #87CEEB 0%,
+    #5DADE2 30%,
+    #F4A460 70%,
+    #DEB887 100%
+  );
+  min-height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+.desert-bg::before {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40%;
+  background: repeating-linear-gradient(
+    90deg,
+    #F4A460 0%,
+    #DEB887 10%,
+    #D2B48C 20%,
+    #F4A460 30%
+  );
+  opacity: 0.6;
+  z-index: 0;
+}
+
+.cactus-decoration {
+  position: absolute;
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.cactus-left {
+  left: 5%;
+  bottom: 10%;
+  font-size: 120px;
+  animation: float 4s ease-in-out infinite;
+}
+
+.cactus-right {
+  right: 8%;
+  bottom: 15%;
+  font-size: 100px;
+  animation: float 5s ease-in-out infinite 1s;
+}
+
+.cloud {
+  position: absolute;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 60px;
+  animation: float 6s ease-in-out infinite;
+}
+
+.cloud-1 {
+  top: 10%;
+  left: 10%;
+}
+
+.cloud-2 {
+  top: 20%;
+  right: 15%;
+  animation-delay: 2s;
+}
+
+.cloud-3 {
+  top: 15%;
+  left: 60%;
+  animation-delay: 4s;
+}
+
+.game-card {
+  width: 80px;
+  height: 112px;
+  border-radius: 8px;
+  background: white;
+  border: 2px solid #333;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  position: relative;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+}
+
+.game-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 12px rgba(0, 0, 0, 0.3);
+}
+
+.game-card.card-back {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.game-card .card-value {
+  font-size: 24px;
+}
+
+.game-card .card-suit {
+  font-size: 32px;
+  margin-top: 4px;
+}
+
+.game-card.hearts .card-value,
+.game-card.diamonds .card-value {
+  color: #e74c3c;
+}
+
+.game-card.clubs .card-value,
+.game-card.spades .card-value {
+  color: #2c3e50;
+}
+
+/* Hide Emergent badge except on admin page */
+body:not([data-page="admin"]) > div[style*="position"][style*="fixed"][style*="bottom"][style*="right"] {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .game-card {
+    width: 60px;
+    height: 84px;
+  }
+  
+  .game-card .card-value {
+    font-size: 18px;
+  }
+  
+  .game-card .card-suit {
+    font-size: 24px;
+  }
+  
+  .cactus-left,
+  .cactus-right {
+    font-size: 60px;
+  }
+}
