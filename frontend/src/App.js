@@ -1,22 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import '@/App.css';
-import Login from '@/pages/Login';
-import Register from '@/pages/Register';
-import Lobby from '@/pages/Lobby';
-import GameRoom from '@/pages/GameRoom';
-import GameBoard from '@/pages/GameBoard';
-import Stats from '@/pages/Stats';
-import AdminPanel from '@/pages/AdminPanel';
-import { Toaster } from '@/components/ui/sonner';
+import './App.css';
+import Login from './pages/Login';
+import Register from './pages/Register';
+import Lobby from './pages/Lobby';
+import GameRoom from './pages/GameRoom';
+import GameBoard from './pages/GameBoard';
+import Stats from './pages/Stats';
+import AdminPanel from './pages/AdminPanel';
+import { Toaster } from './components/ui/sonner';
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Vérifier la session existante
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         fetchProfile(session.user.id);
@@ -25,7 +24,6 @@ function App() {
       }
     });
 
-    // Écouter les changements d'auth
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (session) {
