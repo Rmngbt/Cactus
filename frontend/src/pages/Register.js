@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 export default function Register({ onLogin }) {
   const [username, setUsername] = useState('');
@@ -32,31 +30,51 @@ export default function Register({ onLogin }) {
 
     setLoading(true);
 
-    try {
-      const response = await axios.post(`${BACKEND_URL}/api/auth/register`, {
+    // Créer le compte auth Supabase
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password
+    });
+
+    if (error) {
+      toast.error(error.message);
+      setLoading(false);
+      return;
+    }
+
+    // Créer le profil
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .insert({
+        id: data.user.id,
         username,
-        email,
-        password
+        is_admin: false
       });
 
-      onLogin(response.data.user, response.data.access_token);
-      toast.success('Inscription réussie!');
-      navigate('/lobby');
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erreur lors de l\'inscription');
-    } finally {
+    if (profileError) {
+      toast.error('Erreur lors de la création du profil');
       setLoading(false);
+      return;
     }
+
+    // Créer les stats
+    await supabase
+      .from('stats')
+      .insert({ user_id: data.user.id });
+
+    const profile = { id: data.user.id, username, is_admin: false };
+    onLogin(profile, data.session.access_token);
+    toast.success('Inscription réussie!');
+    navigate('/lobby');
+    setLoading(false);
   };
 
   return (
     <div className="desert-bg flex items-center justify-center min-h-screen p-4">
       <div className="cactus-decoration cactus-left">🌵</div>
       <div className="cactus-decoration cactus-right">🌵</div>
-      <div className="cloud cloud-1">☁️</div>
-      <div className="cloud cloud-2">☁️</div>
 
-      <Card className="w-full max-w-md z-10 shadow-2xl" data-testid="register-card">
+      <Card className="w-full max-w-md z-10 shadow-2xl">
         <CardHeader className="text-center">
           <div className="text-6xl mb-4 floating-cactus">🌵</div>
           <CardTitle className="text-4xl font-bold" style={{ fontFamily: 'Fredoka, sans-serif' }}>
@@ -76,7 +94,6 @@ export default function Register({ onLogin }) {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
-                data-testid="register-username-input"
                 className="border-2"
               />
             </div>
@@ -90,7 +107,6 @@ export default function Register({ onLogin }) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                data-testid="register-email-input"
                 className="border-2"
               />
             </div>
@@ -105,7 +121,6 @@ export default function Register({ onLogin }) {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 minLength={6}
-                data-testid="register-password-input"
                 className="border-2"
               />
             </div>
@@ -119,7 +134,6 @@ export default function Register({ onLogin }) {
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
-                data-testid="register-confirm-password-input"
                 className="border-2"
               />
             </div>
@@ -130,14 +144,13 @@ export default function Register({ onLogin }) {
               type="submit"
               className="w-full desert-button bg-accent hover:bg-accent/90 text-white font-semibold py-6 text-lg"
               disabled={loading}
-              data-testid="register-submit-button"
             >
-              {loading ? 'Inscription...' : 'S\'inscrire'}
+              {loading ? 'Inscription...' : "S'inscrire"}
             </Button>
 
             <div className="text-center text-sm">
               Déjà un compte?{' '}
-              <Link to="/login" className="text-primary font-semibold hover:underline" data-testid="login-link">
+              <Link to="/login" className="text-primary font-semibold hover:underline">
                 Se connecter
               </Link>
             </div>
