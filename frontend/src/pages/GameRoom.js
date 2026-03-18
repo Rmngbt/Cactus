@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
-import { Button } from './components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { Copy, Play, Users, ArrowLeft } from 'lucide-react';
 
@@ -37,7 +37,6 @@ export default function GameRoom({ user, onLogout }) {
       return;
     }
 
-    // Ajouter le joueur si pas déjà dedans
     const players = data.game_state?.players || [];
     const alreadyIn = players.find(p => p.user_id === user.id);
 
@@ -85,12 +84,10 @@ export default function GameRoom({ user, onLogout }) {
 
   const handleStartGame = async () => {
     try {
-      // Initialiser le jeu
       const deck = createDeck();
       const config = room.config;
       const players = room.game_state?.players || [];
 
-      // Ajouter bot si mode bot
       if (room.mode === 'bot') {
         players.push({
           user_id: 'bot',
@@ -259,7 +256,6 @@ export default function GameRoom({ user, onLogout }) {
   );
 }
 
-// Créer un jeu de cartes
 function createDeck() {
   const suits = ['hearts', 'diamonds', 'clubs', 'spades'];
   const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
