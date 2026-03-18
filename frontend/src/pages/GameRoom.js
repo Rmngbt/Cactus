@@ -1,139 +1,142 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { Copy, Play, Users, ArrowLeft, RefreshCw } from 'lucide-react';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const POLLING_INTERVAL = 1500; // 1.5 seconds
+import { Copy, Play, Users, ArrowLeft } from 'lucide-react';
 
 export default function GameRoom({ user, onLogout }) {
   const { code } = useParams();
   const navigate = useNavigate();
   const [room, setRoom] = useState(null);
   const [loading, setLoading] = useState(true);
-  const pollingRef = useRef(null);
-  const previousPlayersRef = useRef([]);
+  const channelRef = useRef(null);
 
   useEffect(() => {
     fetchRoom();
-    
-    // Start polling for real-time updates
-    pollingRef.current = setInterval(() => {
-      fetchRoomSilently();
-    }, POLLING_INTERVAL);
+    subscribeToRoom();
 
     return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
       }
     };
   }, [code]);
 
-  const fetchRoomSilently = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`${BACKEND_URL}/api/game/room/${code}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      const newRoom = response.data;
-      
-      // Check if game has started - redirect to game board
-      if (newRoom.state === 'playing') {
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current);
-        }
-        toast.success('La partie a commencé!');
-        navigate(`/game/${code}`);
-        return;
-      }
-      
-      // Check for new players
-      const currentPlayerIds = previousPlayersRef.current.map(p => p.user_id);
-      const newPlayers = newRoom.players.filter(p => !currentPlayerIds.includes(p.user_id));
-      
-      if (newPlayers.length > 0 && previousPlayersRef.current.length > 0) {
-        newPlayers.forEach(player => {
-          toast.info(`${player.username} a rejoint la partie!`);
-        });
-      }
-      
-      previousPlayersRef.current = newRoom.players;
-      setRoom(newRoom);
-      
-    } catch (error) {
-      // Silent fail during polling
-      console.log('Polling error:', error.message);
+  const fetchRoom = async () => {
+    const { data, error } = await supabase
+      .from('game_rooms')
+      .select('*')
+      .eq('code', code.toUpperCase())
+      .single();
+
+    if (error || !data) {
+      toast.error('Salle introuvable');
+      navigate('/lobby');
+      return;
     }
+
+    const players = data.game_state?.players || [];
+    const alreadyIn = players.find(p => p.user_id === user.id);
+
+    if (!alreadyIn) {
+      const newPlayers = [...players, {
+        user_id: user.id,
+        username: user.username,
+        is_ready: false
+      }];
+
+      await supabase
+        .from('game_rooms')
+        .update({ game_state: { ...data.game_state, players: newPlayers } })
+        .eq('code', code.toUpperCase());
+    }
+
+    if (data.state === 'playing') {
+      navigate(`/game/${code}`);
+      return;
+    }
+
+    setRoom(data);
+    setLoading(false);
   };
 
-  const fetchRoom = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get(`${BACKEND_URL}/api/game/room/${code}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      setRoom(response.data);
-      previousPlayersRef.current = response.data.players;
-      
-      if (response.data.state === 'playing') {
-        navigate(`/game/${code}`);
-      }
-    } catch (error) {
-      toast.error('Erreur lors du chargement de la partie');
-      navigate('/lobby');
-    } finally {
-      setLoading(false);
-    }
+  const subscribeToRoom = () => {
+    channelRef.current = supabase
+      .channel(`room-${code}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'game_rooms',
+        filter: `code=eq.${code.toUpperCase()}`
+      }, (payload) => {
+        const newRoom = payload.new;
+        if (newRoom.state === 'playing') {
+          toast.success('La partie commence!');
+          navigate(`/game/${code}`);
+          return;
+        }
+        setRoom(newRoom);
+      })
+      .subscribe();
   };
 
   const handleStartGame = async () => {
     try {
-      const token = localStorage.getItem('token');
-      await axios.post(
-        `${BACKEND_URL}/api/game/start/${code}`,
-        {},
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      );
-      toast.success('Partie lancée!');
-      // Stop polling and navigate
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
+      const deck = createDeck();
+      const config = room.config;
+      const players = room.game_state?.players || [];
+
+      if (room.mode === 'bot') {
+        players.push({
+          user_id: 'bot',
+          username: `Bot (${config.bot_difficulty})`,
+          is_bot: true,
+          is_ready: true
+        });
       }
+
+      const playersWithCards = players.map(player => ({
+        ...player,
+        hand: deck.splice(0, config.cards_per_player),
+        revealed_cards: player.is_bot ? Array.from({length: config.cards_per_player}, (_, i) => i) : [],
+        total_score: 0,
+        round_score: 0
+      }));
+
+      const gameState = {
+        deck,
+        discard_pile: [deck.splice(0, 1)[0]],
+        players: playersWithCards,
+        current_player_index: 0,
+        round: 1,
+        phase: 'initial_reveal',
+        cards_to_reveal: config.visible_at_start,
+        drawn_card: null,
+        cactus_called: false,
+        cactus_caller: null,
+        remaining_final_turns: 0
+      };
+
+      await supabase
+        .from('game_rooms')
+        .update({
+          state: 'playing',
+          game_state: gameState
+        })
+        .eq('code', code.toUpperCase());
+
+      toast.success('Partie lancée!');
       navigate(`/game/${code}`);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Erreur lors du lancement');
+      toast.error('Erreur lors du lancement');
     }
   };
 
   const copyRoomCode = () => {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(code)
-        .then(() => {
-          toast.success('Code copié dans le presse-papiers!');
-        })
-        .catch(() => {
-          toast.error('Impossible de copier le code');
-        });
-    } else {
-      // Fallback for older browsers
-      const textArea = document.createElement('textarea');
-      textArea.value = code;
-      document.body.appendChild(textArea);
-      textArea.select();
-      try {
-        document.execCommand('copy');
-        toast.success('Code copié dans le presse-papiers!');
-      } catch (err) {
-        toast.error('Impossible de copier le code');
-      }
-      document.body.removeChild(textArea);
-    }
+    navigator.clipboard.writeText(code);
+    toast.success('Code copié!');
   };
 
   if (loading) {
@@ -144,12 +147,11 @@ export default function GameRoom({ user, onLogout }) {
     );
   }
 
-  if (!room) {
-    return null;
-  }
+  if (!room) return null;
 
-  const isCreator = room.creator_id === user.user_id;
-  const canStart = isCreator && room.players.length >= (room.mode === 'multiplayer' ? 2 : 1);
+  const players = room.game_state?.players || [];
+  const isCreator = room.creator_id === user.id;
+  const canStart = isCreator && (room.mode === 'bot' || players.length >= 2);
 
   return (
     <div className="desert-bg min-h-screen p-4">
@@ -161,13 +163,12 @@ export default function GameRoom({ user, onLogout }) {
           variant="outline"
           onClick={() => navigate('/lobby')}
           className="mb-4 desert-button"
-          data-testid="back-to-lobby-button"
         >
           <ArrowLeft className="mr-2 h-4 w-4" />
           Retour au lobby
         </Button>
 
-        <Card className="shadow-2xl mb-6" data-testid="room-card">
+        <Card className="shadow-2xl mb-6">
           <CardHeader className="text-center">
             <div className="text-6xl mb-4">🎮</div>
             <CardTitle className="text-3xl font-bold" style={{ fontFamily: 'Fredoka, sans-serif' }}>
@@ -179,38 +180,19 @@ export default function GameRoom({ user, onLogout }) {
           </CardHeader>
 
           <CardContent className="space-y-6">
-            {/* Room Code - Only show in multiplayer mode */}
             {room.mode === 'multiplayer' && (
               <div className="flex items-center justify-center space-x-3">
-                <div className="text-5xl font-bold tracking-wider text-primary" data-testid="room-code">
+                <div className="text-5xl font-bold tracking-wider text-primary">
                   {code}
                 </div>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={copyRoomCode}
-                  className="desert-button"
-                  data-testid="copy-code-button"
-                >
+                <Button variant="outline" size="icon" onClick={copyRoomCode}>
                   <Copy className="h-5 w-5" />
                 </Button>
               </div>
             )}
 
-            {room.mode === 'bot' && (
-              <div className="text-center">
-                <div className="text-2xl font-semibold text-primary">
-                  Mode Solo - Contre Bot
-                </div>
-                <p className="text-sm text-muted-foreground mt-2">
-                  Difficulté: {room.config.bot_difficulty === 'easy' ? 'Facile' : room.config.bot_difficulty === 'medium' ? 'Moyen' : 'Difficile'}
-                </p>
-              </div>
-            )}
-
-            {/* Game Configuration */}
             <div className="bg-muted p-4 rounded-lg space-y-2">
-              <h3 className="font-semibold text-center mb-3">Configuration de la partie</h3>
+              <h3 className="font-semibold text-center mb-3">Configuration</h3>
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Cartes par joueur:</span>
@@ -225,33 +207,25 @@ export default function GameRoom({ user, onLogout }) {
                   <span className="font-semibold">{room.config.score_threshold}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Nombre de manches:</span>
-                  <span className="font-semibold">{room.config.num_rounds || 1}</span>
+                  <span className="text-muted-foreground">Manches:</span>
+                  <span className="font-semibold">{room.config.num_rounds}</span>
                 </div>
               </div>
             </div>
 
-            {/* Players List */}
             <div>
               <div className="flex items-center justify-center mb-3 space-x-2">
                 <Users className="h-5 w-5" />
-                <h3 className="font-semibold">Joueurs ({room.players.length})</h3>
+                <h3 className="font-semibold">Joueurs ({players.length})</h3>
               </div>
-              <div className="space-y-2" data-testid="players-list">
-                {room.players.map((player, index) => (
-                  <div
-                    key={player.user_id}
-                    className="flex items-center justify-between p-3 bg-muted rounded-lg"
-                    data-testid={`player-${index}`}
-                  >
+              <div className="space-y-2">
+                {players.map((player, index) => (
+                  <div key={player.user_id} className="flex items-center justify-between p-3 bg-muted rounded-lg">
                     <div className="flex items-center space-x-2">
                       <div className="text-2xl">{player.user_id === room.creator_id ? '👑' : '👤'}</div>
                       <span className="font-medium">{player.username}</span>
-                      {player.user_id === room.creator_id && (
-                        <span className="text-xs bg-primary text-white px-2 py-1 rounded">Créateur</span>
-                      )}
                     </div>
-                    {player.user_id === user.user_id && (
+                    {player.user_id === user.id && (
                       <span className="text-xs bg-accent text-white px-2 py-1 rounded">Vous</span>
                     )}
                   </div>
@@ -259,29 +233,20 @@ export default function GameRoom({ user, onLogout }) {
               </div>
             </div>
 
-            {/* Start Button */}
             {isCreator && (
-              <div className="pt-4">
-                <Button
-                  onClick={handleStartGame}
-                  disabled={!canStart}
-                  className="w-full desert-button bg-accent hover:bg-accent/90 text-white font-semibold py-6 text-lg"
-                  data-testid="start-game-button"
-                >
-                  <Play className="mr-2 h-5 w-5" />
-                  {canStart ? 'Lancer la partie' : 'En attente de joueurs...'}
-                </Button>
-                {room.mode === 'multiplayer' && room.players.length < 2 && (
-                  <p className="text-center text-sm text-muted-foreground mt-2">
-                    Au moins 2 joueurs requis
-                  </p>
-                )}
-              </div>
+              <Button
+                onClick={handleStartGame}
+                disabled={!canStart}
+                className="w-full desert-button bg-accent hover:bg-accent/90 text-white font-semibold py-6 text-lg"
+              >
+                <Play className="mr-2 h-5 w-5" />
+                {canStart ? 'Lancer la partie' : 'En attente de joueurs...'}
+              </Button>
             )}
 
             {!isCreator && (
               <div className="text-center text-muted-foreground">
-                En attente que {room.players.find(p => p.user_id === room.creator_id)?.username} lance la partie...
+                En attente que le créateur lance la partie...
               </div>
             )}
           </CardContent>
@@ -289,4 +254,16 @@ export default function GameRoom({ user, onLogout }) {
       </div>
     </div>
   );
+}
+
+function createDeck() {
+  const suits = ['hearts', 'diamonds', 'clubs', 'spades'];
+  const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+  const deck = [];
+  for (const suit of suits) {
+    for (const value of values) {
+      deck.push({ suit, value });
+    }
+  }
+  return deck.sort(() => Math.random() - 0.5);
 }
