@@ -16,18 +16,22 @@ export default function ForgotPassword() {
     e.preventDefault();
     setLoading(true);
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`
-    });
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`
+      });
 
-    if (error) {
-      toast.error('Erreur lors de l\'envoi');
-    } else {
+      if (error) throw error;
+
       setSent(true);
       toast.success('Email envoyé!');
+    } catch (error) {
+      // Même si erreur SMTP, on affiche succès pour ne pas révéler si l'email existe
+      setSent(true);
+      toast.success('Si cet email existe, vous recevrez un lien');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
@@ -77,7 +81,7 @@ export default function ForgotPassword() {
             </CardFooter>
           </form>
         ) : (
-          <CardFooter>
+          <CardFooter className="pt-6">
             <Link to="/login" className="w-full">
               <Button className="w-full desert-button bg-primary hover:bg-primary/90">
                 Retour à la connexion
