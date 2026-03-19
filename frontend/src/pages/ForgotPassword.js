@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -18,15 +16,18 @@ export default function ForgotPassword() {
     e.preventDefault();
     setLoading(true);
 
-    try {
-      await axios.post(`${BACKEND_URL}/api/auth/forgot-password`, { email });
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password`
+    });
+
+    if (error) {
+      toast.error('Erreur lors de l\'envoi');
+    } else {
       setSent(true);
-      toast.success('Email de récupération envoyé!');
-    } catch (error) {
-      toast.error('Erreur lors de l\'envoi de l\'email');
-    } finally {
-      setLoading(false);
+      toast.success('Email envoyé!');
     }
+
+    setLoading(false);
   };
 
   return (
@@ -34,8 +35,9 @@ export default function ForgotPassword() {
       <div className="cactus-decoration cactus-left">🌵</div>
       <div className="cactus-decoration cactus-right">🌵</div>
 
-      <Card className="w-full max-w-md z-10 shadow-2xl" data-testid="forgot-password-card">
+      <Card className="w-full max-w-md z-10 shadow-2xl">
         <CardHeader className="text-center">
+          <div className="text-6xl mb-4">🌵</div>
           <CardTitle className="text-2xl font-bold">Mot de passe oublié</CardTitle>
           <CardDescription>
             {sent
@@ -56,7 +58,6 @@ export default function ForgotPassword() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  data-testid="forgot-password-email-input"
                   className="border-2"
                 />
               </div>
@@ -67,12 +68,10 @@ export default function ForgotPassword() {
                 type="submit"
                 className="w-full desert-button bg-primary hover:bg-primary/90 text-white font-semibold py-6"
                 disabled={loading}
-                data-testid="forgot-password-submit-button"
               >
                 {loading ? 'Envoi...' : 'Envoyer le lien'}
               </Button>
-
-              <Link to="/login" className="text-center text-sm text-primary hover:underline" data-testid="back-to-login-link">
+              <Link to="/login" className="text-center text-sm text-primary hover:underline">
                 Retour à la connexion
               </Link>
             </CardFooter>
@@ -80,7 +79,7 @@ export default function ForgotPassword() {
         ) : (
           <CardFooter>
             <Link to="/login" className="w-full">
-              <Button className="w-full desert-button bg-primary hover:bg-primary/90" data-testid="back-to-login-button">
+              <Button className="w-full desert-button bg-primary hover:bg-primary/90">
                 Retour à la connexion
               </Button>
             </Link>
