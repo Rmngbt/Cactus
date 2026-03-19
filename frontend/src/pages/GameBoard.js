@@ -4,7 +4,7 @@ import { supabase } from '../supabaseClient';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { toast } from 'sonner';
-import { ArrowLeft, Eye, Trash2, ArrowRightLeft, Trophy } from 'lucide-react';
+import { ArrowLeft, Eye, Trash2, ArrowRightLeft } from 'lucide-react';
 import GameCard from '@/components/GameCard';
 
 const CARD_VALUES = {
@@ -20,6 +20,10 @@ function isSpecialCard(card) {
   return ['8', '10', 'J'].includes(card.value);
 }
 
+function calculateScore(hand) {
+  return hand.reduce((sum, card) => sum + getCardValue(card), 0);
+}
+
 export default function GameBoard({ user, onLogout }) {
   const { code } = useParams();
   const navigate = useNavigate();
@@ -30,16 +34,20 @@ export default function GameBoard({ user, onLogout }) {
   const [revealCountdown, setRevealCountdown] = useState(0);
   const channelRef = useRef(null);
   const countdownRef = useRef(null);
+  const gameStateRef = useRef(null);
 
   useEffect(() => {
     fetchRoom();
     subscribeToRoom();
-
     return () => {
       if (channelRef.current) supabase.removeChannel(channelRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
   }, [code]);
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   const fetchRoom = async () => {
     const { data, error } = await supabase
@@ -105,6 +113,178 @@ export default function GameBoard({ user, onLogout }) {
     return newGs;
   };
 
+  // ============================================================
+  // BOT LOGIC 100% OPÉRATIONNEL
+  // ============================================================
+  const executeBotTurn = async (currentGs) => {
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      let newGs = JSON.parse(JSON.stringify(currentGs));
+      const botIdx = newGs.players.findIndex(p => p.is_bot);
+      if (botIdx === -1) return;
+
+      const bot = newGs.players[botIdx];
+      const botScore = calculateScore(bot.hand);
+      const topDiscard = newGs.discard_pile[newGs.discard_pile.length - 1];
+
+      // 1. SLAM — vérifier si le bot peut faire une défausse rapide
+      if (topDiscard) {
+        const slamIdx = bot.hand.findIndex(c => c.value === topDiscard.value);
+        if (slamIdx !== -1) {
+          newGs.players[botIdx].hand.splice(slamIdx, 1);
+          newGs.discard_pile.push(topDiscard);
+
+          // Si le bot n'a plus de cartes → Perfect Cactus
+          if (newGs.players[botIdx].hand.length === 0) {
+            newGs.phase = 'ended';
+            newGs.cactus_called = true;
+            newGs.cactus_caller = 'bot';
+            await supabase.from('game_rooms').update({ game_state: newGs }).eq('code', code.toUpperCase());
+            setGameState(newGs);
+            return;
+          }
+
+          // Donner la carte la plus haute au joueur humain
+          const highestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
+            getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
+          const cardToGive = newGs.players[botIdx].hand.splice(highestIdx, 1)[0];
+          const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+          newGs.players[humanIdx].hand.push(cardToGive);
+
+          const updated = advanceTurn(newGs);
+          await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
+          setGameState(updated);
+          return;
+        }
+      }
+
+      // 2. CACTUS — appeler Cactus si score bas selon difficulté
+      const difficulty = room?.config?.bot_difficulty || 'medium';
+      const cactusThreshold = difficulty === 'easy' ? 5 : difficulty === 'medium' ? 12 : 18;
+
+      if (botScore <= cactusThreshold && !newGs.cactus_called) {
+        newGs.cactus_called = true;
+        newGs.cactus_caller = 'bot';
+        newGs.cactus_caller_username = bot.username;
+        newGs.remaining_final_turns = newGs.players.length - 1;
+        newGs.current_player_index = (newGs.current_player_index + 1) % newGs.players.length;
+
+        await supabase.from('game_rooms').update({ game_state: newGs }).eq('code', code.toUpperCase());
+        setGameState(newGs);
+        return;
+      }
+
+      // 3. PIOCHER — choisir entre pioche et défausse
+      if (!newGs.deck || newGs.deck.length === 0) {
+        if (newGs.discard_pile.length > 1) {
+          const top = newGs.discard_pile.pop();
+          newGs.deck = newGs.discard_pile.sort(() => Math.random() - 0.5);
+          newGs.discard_pile = [top];
+        } else return;
+      }
+
+      // Prendre la défausse si elle améliore le score
+      let drawnCard;
+      const discardValue = topDiscard ? getCardValue(topDiscard) : 999;
+      const worstCardValue = Math.max(...bot.hand.map(c => getCardValue(c)));
+
+      if (discardValue < worstCardValue && newGs.discard_pile.length > 0) {
+        drawnCard = newGs.discard_pile.pop();
+      } else {
+        drawnCard = newGs.deck.pop();
+      }
+
+      newGs.drawn_card = drawnCard;
+
+      // 4. DÉCIDER quoi faire avec la carte piochée
+      const drawnValue = getCardValue(drawnCard);
+      const highestCardIdx = bot.hand.reduce((maxIdx, card, idx, arr) =>
+        getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
+      const highestCardValue = getCardValue(bot.hand[highestCardIdx]);
+
+      if (drawnValue < highestCardValue) {
+        // Échanger avec la carte la plus haute
+        const oldCard = newGs.players[botIdx].hand[highestCardIdx];
+        newGs.players[botIdx].hand[highestCardIdx] = drawnCard;
+        newGs.discard_pile.push(oldCard);
+        newGs.drawn_card = null;
+
+        // 5. CARTES SPÉCIALES — utiliser le pouvoir si carte spéciale défaussée
+        if (isSpecialCard(oldCard)) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+
+          if (oldCard.value === '8') {
+            // Regarder sa propre carte la plus haute (inconnue)
+            const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
+              !newGs.players[botIdx].revealed_cards?.includes(i));
+            if (unknownIdx !== -1) {
+              if (!newGs.players[botIdx].revealed_cards) newGs.players[botIdx].revealed_cards = [];
+              newGs.players[botIdx].revealed_cards.push(unknownIdx);
+            }
+          } else if (oldCard.value === '10') {
+            // Regarder la carte adverse la plus haute connue
+            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+            // Le bot note mentalement (pas d'action visible)
+          } else if (oldCard.value === 'J') {
+            // Échanger sa carte la plus haute avec la carte la plus basse de l'adversaire
+            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+            const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
+              getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
+            const humanLowestIdx = newGs.players[humanIdx].hand.reduce((minIdx, card, idx, arr) =>
+              getCardValue(card) < getCardValue(arr[minIdx]) ? idx : minIdx, 0);
+
+            const botCard = newGs.players[botIdx].hand[botHighestIdx];
+            const humanCard = newGs.players[humanIdx].hand[humanLowestIdx];
+            newGs.players[botIdx].hand[botHighestIdx] = humanCard;
+            newGs.players[humanIdx].hand[humanLowestIdx] = botCard;
+          }
+        }
+
+        const updated = advanceTurn(newGs);
+        await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
+        setGameState(updated);
+      } else {
+        // Défausser la carte piochée
+        newGs.discard_pile.push(drawnCard);
+        newGs.drawn_card = null;
+
+        if (isSpecialCard(drawnCard)) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+
+          if (drawnCard.value === '8') {
+            const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
+              !newGs.players[botIdx].revealed_cards?.includes(i));
+            if (unknownIdx !== -1) {
+              if (!newGs.players[botIdx].revealed_cards) newGs.players[botIdx].revealed_cards = [];
+              newGs.players[botIdx].revealed_cards.push(unknownIdx);
+            }
+          } else if (drawnCard.value === 'J') {
+            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+            const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
+              getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
+            const humanLowestIdx = newGs.players[humanIdx].hand.reduce((minIdx, card, idx, arr) =>
+              getCardValue(card) < getCardValue(arr[minIdx]) ? idx : minIdx, 0);
+
+            const botCard = newGs.players[botIdx].hand[botHighestIdx];
+            const humanCard = newGs.players[humanIdx].hand[humanLowestIdx];
+            newGs.players[botIdx].hand[botHighestIdx] = humanCard;
+            newGs.players[humanIdx].hand[humanLowestIdx] = botCard;
+          }
+        }
+
+        const updated = advanceTurn(newGs);
+        await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
+        setGameState(updated);
+      }
+
+    } catch (err) {
+      console.error('Bot error:', err);
+    }
+  };
+  // ============================================================
+  // FIN BOT LOGIC
+  // ============================================================
+
   const handleRevealCard = async (cardIndex) => {
     if (!gameState || gameState.phase !== 'initial_reveal') return;
     const myPlayerIdx = gameState.players.findIndex(p => p.user_id === user.id);
@@ -168,24 +348,21 @@ export default function GameBoard({ user, onLogout }) {
     const oldCard = newGs.players[myPlayerIdx].hand[cardIndex];
     newGs.players[myPlayerIdx].hand[cardIndex] = newGs.drawn_card;
     newGs.discard_pile.push(oldCard);
+    newGs.drawn_card = null;
 
     if (isSpecialCard(oldCard)) {
       newGs.special_card_available = true;
       newGs.special_card_player = user.id;
       newGs.special_card_type = oldCard.value;
       newGs.awaiting_special_action = true;
+      await updateGameState(newGs);
     } else {
-      newGs.drawn_card = null;
       const updated = advanceTurn(newGs);
       await updateGameState(updated);
       if (updated.players[updated.current_player_index]?.is_bot) {
-        setTimeout(() => executeBotTurn(updated), 1000);
+        executeBotTurn(updated);
       }
-      return;
     }
-
-    newGs.drawn_card = null;
-    await updateGameState(newGs);
   };
 
   const handleDiscardDrawn = async () => {
@@ -205,7 +382,7 @@ export default function GameBoard({ user, onLogout }) {
       const updated = advanceTurn(newGs);
       await updateGameState(updated);
       if (updated.players[updated.current_player_index]?.is_bot) {
-        setTimeout(() => executeBotTurn(updated), 1000);
+        executeBotTurn(updated);
       }
     }
   };
@@ -226,10 +403,12 @@ export default function GameBoard({ user, onLogout }) {
           newGs.phase = 'ended';
         }
         newGs.pending_give_card = { from_player: user.id, to_player: targetPlayer };
+        toast.success('Slam réussi!');
       } else {
         if (newGs.deck.length > 0) {
           newGs.players[myPlayerIdx].hand.push(newGs.deck.pop());
         }
+        toast.error('Slam raté! +1 carte');
       }
     } else {
       const card = newGs.players[myPlayerIdx].hand[cardIndex];
@@ -241,10 +420,12 @@ export default function GameBoard({ user, onLogout }) {
           newGs.cactus_caller = user.id;
           newGs.phase = 'ended';
         }
+        toast.success('Slam réussi!');
       } else {
         if (newGs.deck.length > 0) {
           newGs.players[myPlayerIdx].hand.push(newGs.deck.pop());
         }
+        toast.error('Slam raté! +1 carte');
       }
     }
     await updateGameState(newGs);
@@ -262,7 +443,7 @@ export default function GameBoard({ user, onLogout }) {
 
     await updateGameState(newGs);
     if (newGs.players[newGs.current_player_index]?.is_bot) {
-      setTimeout(() => executeBotTurn(newGs), 1000);
+      executeBotTurn(newGs);
     }
   };
 
@@ -328,7 +509,6 @@ export default function GameBoard({ user, onLogout }) {
 
     const myCard = newGs.players[myPlayerIdx].hand[myCardIndex];
     const targetCard = newGs.players[targetIdx].hand[targetCardIndex];
-
     newGs.players[myPlayerIdx].hand[myCardIndex] = targetCard;
     newGs.players[targetIdx].hand[targetCardIndex] = myCard;
 
@@ -342,12 +522,14 @@ export default function GameBoard({ user, onLogout }) {
     setSwapMyCard(null);
 
     if (updated.players[updated.current_player_index]?.is_bot) {
-      setTimeout(() => executeBotTurn(updated), 1000);
+      executeBotTurn(updated);
     }
   };
 
   const handleClearSpecial = async () => {
-    const newGs = JSON.parse(JSON.stringify(gameState));
+    const gs = gameStateRef.current;
+    if (!gs) return;
+    const newGs = JSON.parse(JSON.stringify(gs));
     newGs.special_reveal = null;
     newGs.special_card_available = false;
     newGs.special_card_player = null;
@@ -355,10 +537,11 @@ export default function GameBoard({ user, onLogout }) {
     newGs.awaiting_special_action = false;
 
     const updated = advanceTurn(newGs);
-    await updateGameState(updated);
+    await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
+    setGameState(updated);
 
     if (updated.players[updated.current_player_index]?.is_bot) {
-      setTimeout(() => executeBotTurn(updated), 1000);
+      executeBotTurn(updated);
     }
   };
 
@@ -378,49 +561,6 @@ export default function GameBoard({ user, onLogout }) {
     newGs.pending_give_card = null;
 
     await updateGameState(newGs);
-  };
-
-  const executeBotTurn = async (currentGs) => {
-    try {
-      const newGs = JSON.parse(JSON.stringify(currentGs));
-      const botIdx = newGs.players.findIndex(p => p.is_bot);
-      if (botIdx === -1) return;
-
-      if (newGs.deck.length === 0) {
-        if (newGs.discard_pile.length > 1) {
-          const top = newGs.discard_pile.pop();
-          newGs.deck = newGs.discard_pile.sort(() => Math.random() - 0.5);
-          newGs.discard_pile = [top];
-        } else return;
-      }
-
-      newGs.drawn_card = newGs.deck.pop();
-
-      let highestIdx = 0;
-      let highestVal = getCardValue(newGs.players[botIdx].hand[0]);
-      newGs.players[botIdx].hand.forEach((card, i) => {
-        if (getCardValue(card) > highestVal) {
-          highestVal = getCardValue(card);
-          highestIdx = i;
-        }
-      });
-
-      const oldCard = newGs.players[botIdx].hand[highestIdx];
-      newGs.players[botIdx].hand[highestIdx] = newGs.drawn_card;
-      newGs.discard_pile.push(oldCard);
-      newGs.drawn_card = null;
-
-      const updated = advanceTurn(newGs);
-
-      const { error } = await supabase
-        .from('game_rooms')
-        .update({ game_state: updated })
-        .eq('code', code.toUpperCase());
-
-      if (!error) setGameState(updated);
-    } catch (err) {
-      console.error('Bot error:', err);
-    }
   };
 
   if (loading || !gameState) {
@@ -513,7 +653,11 @@ export default function GameBoard({ user, onLogout }) {
 
                         return (
                           <div key={cardIdx} className="relative group">
-                            <GameCard card={isSpecialRevealed ? gameState.special_reveal.card : null} isHidden={!isSpecialRevealed} size="sm" />
+                            <GameCard
+                              card={isSpecialRevealed ? gameState.special_reveal.card : null}
+                              isHidden={!isSpecialRevealed}
+                              size="sm"
+                            />
                             {gameState.discard_pile?.length > 0 && !specialAvailable && !pendingGiveCard && (
                               <button
                                 className="absolute -top-1 -right-1 h-6 w-6 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 flex items-center justify-center"
@@ -553,7 +697,10 @@ export default function GameBoard({ user, onLogout }) {
               <div className="flex justify-center items-center space-x-8 flex-wrap gap-4">
                 <div className="text-center">
                   <div className="text-sm font-semibold mb-2">Pioche</div>
-                  <button onClick={handleDrawDeck} disabled={!isMyTurn || !!gameState.drawn_card || gameState.phase !== 'playing'}>
+                  <button
+                    onClick={handleDrawDeck}
+                    disabled={!isMyTurn || !!gameState.drawn_card || gameState.phase !== 'playing'}
+                  >
                     <GameCard card={null} isHidden={true} size="md" />
                   </button>
                   <div className="text-xs mt-1">{gameState.deck?.length || 0} cartes</div>
@@ -567,16 +714,24 @@ export default function GameBoard({ user, onLogout }) {
                       <Trash2 className="h-4 w-4 mr-1" />
                       Défausser
                     </Button>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Ou cliquez sur une de vos cartes pour échanger
+                    </div>
                   </div>
                 )}
 
                 <div className="text-center">
                   <div className="text-sm font-semibold mb-2">Défausse</div>
-                  <button onClick={handleDrawDiscard} disabled={!isMyTurn || !!gameState.drawn_card || !gameState.discard_pile?.length || gameState.phase !== 'playing'}>
+                  <button
+                    onClick={handleDrawDiscard}
+                    disabled={!isMyTurn || !!gameState.drawn_card || !gameState.discard_pile?.length || gameState.phase !== 'playing'}
+                  >
                     {gameState.discard_pile?.length > 0 ? (
                       <GameCard card={gameState.discard_pile[gameState.discard_pile.length - 1]} size="md" />
                     ) : (
-                      <div className="w-24 h-32 border-2 border-dashed rounded-lg flex items-center justify-center text-muted-foreground">Vide</div>
+                      <div className="w-24 h-32 border-2 border-dashed rounded-lg flex items-center justify-center text-muted-foreground">
+                        Vide
+                      </div>
                     )}
                   </button>
                   <div className="text-xs mt-1">{gameState.discard_pile?.length || 0} cartes</div>
@@ -589,7 +744,9 @@ export default function GameBoard({ user, onLogout }) {
           <Card className="shadow-2xl bg-gradient-to-br from-accent/20 to-primary/20">
             <CardContent className="p-4">
               <div className="flex justify-between items-center mb-3">
-                <span className="font-bold text-lg">Votre main ({myPlayer?.hand?.length} cartes)</span>
+                <span className="font-bold text-lg">
+                  Votre main ({myPlayer?.hand?.length} cartes)
+                </span>
                 <Button
                   onClick={handleCallCactus}
                   disabled={!isMyTurn || gameState.cactus_called || gameState.phase !== 'playing'}
@@ -607,28 +764,52 @@ export default function GameBoard({ user, onLogout }) {
 
                   return (
                     <div key={cardIdx} className="relative group">
-                      <GameCard card={isSpecialRevealed ? gameState.special_reveal.card : null} isHidden={!isSpecialRevealed} size="lg" />
+                      <GameCard
+                        card={isSpecialRevealed ? gameState.special_reveal.card : null}
+                        isHidden={!isSpecialRevealed}
+                        size="lg"
+                      />
                       <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 flex space-x-1">
                         {pendingGiveCard && (
-                          <button className="h-7 w-7 rounded-full shadow-lg bg-green-500 text-white flex items-center justify-center" onClick={() => handleGiveCard(cardIdx)}>🎁</button>
+                          <button
+                            className="h-7 w-7 rounded-full shadow-lg bg-green-500 text-white flex items-center justify-center"
+                            onClick={() => handleGiveCard(cardIdx)}
+                            title="Donner cette carte"
+                          >
+                            🎁
+                          </button>
                         )}
                         {specialAvailable && gameState.special_card_type === '8' && (
-                          <button className="h-7 w-7 rounded-full shadow-lg bg-purple-500 text-white flex items-center justify-center" onClick={() => handleSpecialLookOwn(cardIdx)}>
+                          <button
+                            className="h-7 w-7 rounded-full shadow-lg bg-purple-500 text-white flex items-center justify-center"
+                            onClick={() => handleSpecialLookOwn(cardIdx)}
+                          >
                             <Eye className="h-3 w-3" />
                           </button>
                         )}
                         {specialAvailable && gameState.special_card_type === 'J' && swapMyCard === null && (
-                          <button className="h-7 w-7 rounded-full shadow-lg bg-purple-500 text-white flex items-center justify-center" onClick={() => setSwapMyCard(cardIdx)}>
+                          <button
+                            className="h-7 w-7 rounded-full shadow-lg bg-purple-500 text-white flex items-center justify-center"
+                            onClick={() => setSwapMyCard(cardIdx)}
+                          >
                             <ArrowRightLeft className="h-3 w-3" />
                           </button>
                         )}
                         {!pendingGiveCard && !specialAvailable && gameState.discard_pile?.length > 0 && (
-                          <button className="h-7 w-7 rounded-full shadow-lg bg-red-500 text-white flex items-center justify-center" onClick={() => handleFastDiscard(cardIdx)}>
+                          <button
+                            className="h-7 w-7 rounded-full shadow-lg bg-red-500 text-white flex items-center justify-center"
+                            onClick={() => handleFastDiscard(cardIdx)}
+                            title="Défausse rapide"
+                          >
                             <Trash2 className="h-3 w-3" />
                           </button>
                         )}
                         {gameState.drawn_card && isMyTurn && !pendingGiveCard && !specialAvailable && (
-                          <button className="h-7 w-7 rounded-full shadow-lg bg-primary text-white flex items-center justify-center" onClick={() => handleExchangeCard(cardIdx)}>
+                          <button
+                            className="h-7 w-7 rounded-full shadow-lg bg-primary text-white flex items-center justify-center"
+                            onClick={() => handleExchangeCard(cardIdx)}
+                            title="Échanger avec carte piochée"
+                          >
                             <ArrowRightLeft className="h-3 w-3" />
                           </button>
                         )}
@@ -641,16 +822,19 @@ export default function GameBoard({ user, onLogout }) {
           </Card>
 
           {/* Banners */}
-          {gameState.cactus_called && (
+          {gameState.cactus_called && gameState.phase !== 'ended' && (
             <div className="bg-accent text-white p-3 rounded-lg text-center font-semibold animate-pulse">
-              🌵 Cactus appelé par {gameState.cactus_caller_username}! Tours restants: {gameState.remaining_final_turns}
+              🌵 Cactus appelé par {gameState.cactus_caller_username || 'un joueur'}! Tours restants: {gameState.remaining_final_turns}
             </div>
           )}
 
           {pendingGiveCard && (
             <div className="bg-green-600 text-white p-4 rounded-lg text-center space-y-3">
-              <div className="font-semibold">🎉 Défausse réussie! Donnez une carte à l'adversaire.</div>
-              <Button onClick={() => { const newGs = {...gameState, pending_give_card: null}; updateGameState(newGs); }} variant="outline" size="sm" className="bg-white text-green-600">
+              <div className="font-semibold">🎉 Slam réussi! Donnez une carte à l'adversaire.</div>
+              <Button
+                onClick={() => { const newGs = { ...gameState, pending_give_card: null }; updateGameState(newGs); }}
+                variant="outline" size="sm" className="bg-white text-green-600"
+              >
                 Passer
               </Button>
             </div>
@@ -662,7 +846,10 @@ export default function GameBoard({ user, onLogout }) {
                 ✨ Carte spéciale!
                 {gameState.special_card_type === '8' && " Cliquez sur une de VOS cartes pour la voir"}
                 {gameState.special_card_type === '10' && " Cliquez sur une carte ADVERSE pour la voir"}
-                {gameState.special_card_type === 'J' && (swapMyCard === null ? " Sélectionnez d'abord UNE de VOS cartes" : " Maintenant cliquez sur une carte ADVERSE")}
+                {gameState.special_card_type === 'J' && (swapMyCard === null
+                  ? " Sélectionnez d'abord UNE de VOS cartes"
+                  : " Maintenant cliquez sur une carte ADVERSE"
+                )}
               </div>
               {revealCountdown > 0 && <div className="text-2xl font-bold">{revealCountdown}s</div>}
               {revealCountdown === 0 && (
@@ -679,10 +866,16 @@ export default function GameBoard({ user, onLogout }) {
               <div className="text-2xl font-bold">🏆 Partie Terminée!</div>
               <div className="space-y-2">
                 {gameState.players
-                  .map(p => ({ ...p, score: p.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0 }))
+                  .map(p => ({
+                    ...p,
+                    score: p.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0
+                  }))
                   .sort((a, b) => a.score - b.score)
                   .map((player, idx) => (
-                    <div key={player.user_id} className={`flex justify-between p-2 rounded ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}>
+                    <div
+                      key={player.user_id}
+                      className={`flex justify-between p-2 rounded ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}
+                    >
                       <span>{idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}</span>
                       <span>{player.score} points</span>
                     </div>
