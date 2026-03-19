@@ -4,6 +4,8 @@ import { supabase } from './supabaseClient';
 import './App.css';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import Lobby from './pages/Lobby';
 import GameRoom from './pages/GameRoom';
 import GameBoard from './pages/GameBoard';
@@ -26,6 +28,9 @@ function App() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        if (event === 'PASSWORD_RECOVERY') {
+          return;
+        }
         if (session) {
           fetchProfile(session.user.id);
         } else {
@@ -45,9 +50,7 @@ function App() {
       .eq('id', userId)
       .single();
 
-    if (profile) {
-      setUser(profile);
-    }
+    if (profile) setUser(profile);
     setLoading(false);
   };
 
@@ -74,6 +77,8 @@ function App() {
         <Routes>
           <Route path="/login" element={!user ? <Login onLogin={handleLogin} /> : <Navigate to="/lobby" />} />
           <Route path="/register" element={!user ? <Register onLogin={handleLogin} /> : <Navigate to="/lobby" />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/lobby" element={user ? <Lobby user={user} onLogout={handleLogout} /> : <Navigate to="/login" />} />
           <Route path="/room/:code" element={user ? <GameRoom user={user} onLogout={handleLogout} /> : <Navigate to="/login" />} />
           <Route path="/game/:code" element={user ? <GameBoard user={user} onLogout={handleLogout} /> : <Navigate to="/login" />} />
