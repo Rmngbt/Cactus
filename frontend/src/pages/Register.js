@@ -30,49 +30,75 @@ export default function Register({ onLogin }) {
 
     setLoading(true);
 
-    // Créer le compte auth Supabase
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password
-    });
+    try {
+      // Vérifier si le pseudo est déjà pris
+      const { data: existingUser } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('username', username)
+        .single();
 
-    if (error) {
-      toast.error(error.message);
-      setLoading(false);
-      return;
-    }
+      if (existingUser) {
+        toast.error('Ce pseudo est déjà utilisé');
+        setLoading(false);
+        return;
+      }
 
-    // Créer le profil
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert({
-        id: data.user.id,
-        username,
-        is_admin: false
+      // Créer le compte auth
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password
       });
 
-    if (profileError) {
-      toast.error('Erreur lors de la création du profil');
+      if (error) {
+        toast.error(error.message);
+        setLoading(false);
+        return;
+      }
+
+      if (!data.user) {
+        toast.error('Erreur lors de la création du compte');
+        setLoading(false);
+        return;
+      }
+
+      // Créer le profil
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .insert({
+          id: data.user.id,
+          username,
+          is_admin: false
+        });
+
+      if (profileError) {
+        toast.error('Erreur lors de la création du profil');
+        setLoading(false);
+        return;
+      }
+
+      // Créer les stats
+      await supabase
+        .from('stats')
+        .insert({ user_id: data.user.id });
+
+      const profile = { id: data.user.id, username, is_admin: false };
+      onLogin(profile);
+      toast.success('Inscription réussie!');
+      navigate('/lobby');
+    } catch (error) {
+      toast.error('Erreur lors de l\'inscription');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    // Créer les stats
-    await supabase
-      .from('stats')
-      .insert({ user_id: data.user.id });
-
-    const profile = { id: data.user.id, username, is_admin: false };
-    onLogin(profile, data.session.access_token);
-    toast.success('Inscription réussie!');
-    navigate('/lobby');
-    setLoading(false);
   };
 
   return (
     <div className="desert-bg flex items-center justify-center min-h-screen p-4">
       <div className="cactus-decoration cactus-left">🌵</div>
       <div className="cactus-decoration cactus-right">🌵</div>
+      <div className="cloud cloud-1">☁️</div>
+      <div className="cloud cloud-2">☁️</div>
 
       <Card className="w-full max-w-md z-10 shadow-2xl">
         <CardHeader className="text-center">
