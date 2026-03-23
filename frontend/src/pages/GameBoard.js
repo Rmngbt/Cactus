@@ -13,15 +13,23 @@ const CARD_VALUES = {
 };
 
 function getCardValue(card) {
-  return CARD_VALUES[card.value] || 0;
+  if (!card || !card.value) return 0;
+  return CARD_VALUES[card.value] ?? 0;
 }
 
 function isSpecialCard(card) {
+  if (!card || !card.value) return false;
   return ['8', '10', 'J'].includes(card.value);
 }
 
 function calculateScore(hand) {
+  if (!hand || hand.length === 0) return 0;
   return hand.reduce((sum, card) => sum + getCardValue(card), 0);
+}
+
+function getSuitSymbol(suit) {
+  const symbols = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
+  return symbols[suit] || '?';
 }
 
 export default function GameBoard({ user, onLogout }) {
@@ -33,12 +41,14 @@ export default function GameBoard({ user, onLogout }) {
   const [swapMyCard, setSwapMyCard] = useState(null);
   const [revealCountdown, setRevealCountdown] = useState(0);
   const [botRevealMessage, setBotRevealMessage] = useState(null);
+  const [botActionLog, setBotActionLog] = useState([]);
   const [revealTimer, setRevealTimer] = useState(0);
   const channelRef = useRef(null);
   const countdownRef = useRef(null);
   const revealTimerRef = useRef(null);
   const gameStateRef = useRef(null);
   const statsUpdatedRef = useRef(false);
+  const roomRef = useRef(null);
 
   useEffect(() => {
     fetchRoom();
@@ -57,6 +67,14 @@ export default function GameBoard({ user, onLogout }) {
       updateStats(gameState);
     }
   }, [gameState]);
+
+  useEffect(() => {
+    roomRef.current = room;
+  }, [room]);
+
+  const addBotLog = (message) => {
+    setBotActionLog(prev => [...prev.slice(-4), `🤖 ${message}`]);
+  };
 
   const fetchRoom = async () => {
     const { data, error } = await supabase
@@ -97,9 +115,8 @@ export default function GameBoard({ user, onLogout }) {
       if (!myPlayer) return;
 
       const myScore = myPlayer.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0;
-      const scores = gs.players
-        .filter(p => !p.is_bot)
-        .map(p => p.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0);
+      const humanPlayers = gs.players.filter(p => !p.is_bot);
+      const scores = humanPlayers.map(p => p.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0);
       const isWinner = myScore === Math.min(...scores);
 
       const { data: currentStats } = await supabase
@@ -163,7 +180,7 @@ export default function GameBoard({ user, onLogout }) {
         newGs.phase = 'ended';
         newGs.players = newGs.players.map(p => ({
           ...p,
-          round_score: p.hand.reduce((sum, card) => sum + getCardValue(card), 0)
+          round_score: p.hand ? p.hand.reduce((sum, card) => sum + getCardValue(card), 0) : 0
         }));
       }
     }
@@ -171,7 +188,7 @@ export default function GameBoard({ user, onLogout }) {
   };
 
   // ============================================================
-  // BOT LOGIC
+  // BOT LOGIC COMPLET ET CORRIGÉ
   // ============================================================
   const executeBotTurn = async (currentGs) => {
     try {
@@ -181,17 +198,23 @@ export default function GameBoard({ user, onLogout }) {
       if (botIdx === -1) return;
 
       const bot = newGs.players[botIdx];
-      const botScore = calculateScore(bot.hand);
-      const topDiscard = newGs.discard_pile[newGs.discard_pile.length - 1];
+      if (!bot.hand || bot.hand.length === 0) return;
 
-      // 1. SLAM
-      if (topDiscard) {
-        const slamIdx = bot.hand.findIndex(c => c.value === topDiscard.value);
+      const botScore = calculateScore(bot.hand);
+      const topDiscard = newGs.discard_pile?.length > 0
+        ? newGs.discard_pile[newGs.discard_pile.length - 1]
+        : null;
+
+      // 1. SLAM — vérifier si le bot peut faire une défausse rapide
+      if (topDiscard && topDiscard.value) {
+        const slamIdx = bot.hand.findIndex(c => c && c.value === topDiscard.value);
         if (slamIdx !== -1) {
+          addBotLog(`Slam ! Défausse un ${bot.hand[slamIdx].value}`);
           newGs.players[botIdx].hand.splice(slamIdx, 1);
           newGs.discard_pile.push(topDiscard);
 
           if (newGs.players[botIdx].hand.length === 0) {
+            addBotLog('Perfect Cactus !');
             newGs.phase = 'ended';
             newGs.cactus_called = true;
             newGs.cactus_caller = 'bot';
@@ -200,11 +223,19 @@ export default function GameBoard({ user, onLogout }) {
             return;
           }
 
-          const highestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
-            getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
-          const cardToGive = newGs.players[botIdx].hand.splice(highestIdx, 1)[0];
-          const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-          newGs.players[humanIdx].hand.push(cardToGive);
+          // Donner la carte la plus haute au joueur humain
+          if (newGs.players[botIdx].hand.length > 0) {
+            const highestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) => {
+              if (!card) return maxIdx;
+              return getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx;
+            }, 0);
+            const cardToGive = newGs.players[botIdx].hand.splice(highestIdx, 1)[0];
+            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+            if (humanIdx !== -1 && cardToGive) {
+              newGs.players[humanIdx].hand.push(cardToGive);
+              addBotLog(`Donne un ${cardToGive.value} au joueur`);
+            }
+          }
 
           const updated = advanceTurn(newGs);
           await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
@@ -213,11 +244,13 @@ export default function GameBoard({ user, onLogout }) {
         }
       }
 
-      // 2. CACTUS
-      const difficulty = room?.config?.bot_difficulty || 'medium';
+      // 2. CACTUS — appeler si score bas selon difficulté
+      const currentRoom = roomRef.current;
+      const difficulty = currentRoom?.config?.bot_difficulty || 'medium';
       const cactusThreshold = difficulty === 'easy' ? 5 : difficulty === 'medium' ? 12 : 18;
 
       if (botScore <= cactusThreshold && !newGs.cactus_called) {
+        addBotLog(`Appelle Cactus ! (score: ${botScore})`);
         newGs.cactus_called = true;
         newGs.cactus_caller = 'bot';
         newGs.cactus_caller_username = bot.username;
@@ -229,98 +262,120 @@ export default function GameBoard({ user, onLogout }) {
         return;
       }
 
-      // 3. PIOCHER
+      // 3. RECYCLER le deck si vide
       if (!newGs.deck || newGs.deck.length === 0) {
-        if (newGs.discard_pile.length > 1) {
+        if (newGs.discard_pile && newGs.discard_pile.length > 1) {
           const top = newGs.discard_pile.pop();
-          newGs.deck = newGs.discard_pile.sort(() => Math.random() - 0.5);
+          newGs.deck = newGs.discard_pile.filter(c => c).sort(() => Math.random() - 0.5);
           newGs.discard_pile = [top];
-        } else return;
+          addBotLog('Recycle le deck');
+        } else {
+          addBotLog('Pas de cartes disponibles');
+          return;
+        }
       }
 
-      let drawnCard;
+      // 4. CHOISIR entre pioche et défausse
+      let drawnCard = null;
       const discardValue = topDiscard ? getCardValue(topDiscard) : 999;
-      const worstCardValue = Math.max(...bot.hand.map(c => getCardValue(c)));
+      const worstCardValue = bot.hand.length > 0
+        ? Math.max(...bot.hand.filter(c => c).map(c => getCardValue(c)))
+        : 0;
 
-      if (discardValue < worstCardValue && newGs.discard_pile.length > 0) {
+      if (topDiscard && discardValue < worstCardValue && newGs.discard_pile.length > 0) {
         drawnCard = newGs.discard_pile.pop();
-      } else {
+        addBotLog(`Prend la défausse : ${drawnCard?.value}`);
+      } else if (newGs.deck && newGs.deck.length > 0) {
         drawnCard = newGs.deck.pop();
+        addBotLog(`Pioche une carte`);
       }
 
+      if (!drawnCard) {
+        addBotLog('Pas de carte à piocher');
+        return;
+      }
+
+      // 5. DÉCIDER quoi faire avec la carte piochée
       const drawnValue = getCardValue(drawnCard);
-      const highestCardIdx = bot.hand.reduce((maxIdx, card, idx, arr) =>
-        getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
-      const highestCardValue = getCardValue(bot.hand[highestCardIdx]);
+      const highestCardIdx = bot.hand.reduce((maxIdx, card, idx, arr) => {
+        if (!card) return maxIdx;
+        return getCardValue(card) > getCardValue(arr[maxIdx] || { value: '2' }) ? idx : maxIdx;
+      }, 0);
+      const highestCardValue = bot.hand[highestCardIdx] ? getCardValue(bot.hand[highestCardIdx]) : 0;
+
+      let discardedCard = null;
 
       if (drawnValue < highestCardValue) {
-        const oldCard = newGs.players[botIdx].hand[highestCardIdx];
+        // Échanger avec la carte la plus haute
+        discardedCard = newGs.players[botIdx].hand[highestCardIdx];
         newGs.players[botIdx].hand[highestCardIdx] = drawnCard;
-        newGs.discard_pile.push(oldCard);
+        newGs.discard_pile.push(discardedCard);
         newGs.drawn_card = null;
-
-        if (isSpecialCard(oldCard)) {
-          await new Promise(resolve => setTimeout(resolve, 800));
-
-          if (oldCard.value === '8') {
-            const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
-              !newGs.players[botIdx].revealed_cards?.includes(i));
-            if (unknownIdx !== -1) {
-              if (!newGs.players[botIdx].revealed_cards) newGs.players[botIdx].revealed_cards = [];
-              newGs.players[botIdx].revealed_cards.push(unknownIdx);
-            }
-          } else if (oldCard.value === '10') {
-            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-            const targetCardIdx = 0;
-            const peekedCard = newGs.players[humanIdx].hand[targetCardIdx];
-            setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value} ${peekedCard.suit === 'hearts' ? '♥' : peekedCard.suit === 'diamonds' ? '♦' : peekedCard.suit === 'clubs' ? '♣' : '♠'}`);
-            setTimeout(() => setBotRevealMessage(null), 4000);
-          } else if (oldCard.value === 'J') {
-            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-            const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
-              getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
-            const humanLowestIdx = newGs.players[humanIdx].hand.reduce((minIdx, card, idx, arr) =>
-              getCardValue(card) < getCardValue(arr[minIdx]) ? idx : minIdx, 0);
-
-            const botCard = newGs.players[botIdx].hand[botHighestIdx];
-            const humanCard = newGs.players[humanIdx].hand[humanLowestIdx];
-            newGs.players[botIdx].hand[botHighestIdx] = humanCard;
-            newGs.players[humanIdx].hand[humanLowestIdx] = botCard;
-            toast.info(`🤖 Le bot a échangé une carte avec vous!`);
-          }
-        }
+        addBotLog(`Échange ${discardedCard?.value} contre ${drawnCard.value}`);
       } else {
-        newGs.discard_pile.push(drawnCard);
+        // Défausser la carte piochée
+        discardedCard = drawnCard;
+        newGs.discard_pile.push(discardedCard);
         newGs.drawn_card = null;
+        addBotLog(`Défausse ${discardedCard?.value}`);
+      }
 
-        if (isSpecialCard(drawnCard)) {
-          await new Promise(resolve => setTimeout(resolve, 800));
+      // 6. CARTES SPÉCIALES
+      if (discardedCard && isSpecialCard(discardedCard)) {
+        await new Promise(resolve => setTimeout(resolve, 800));
 
-          if (drawnCard.value === '8') {
-            const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
-              !newGs.players[botIdx].revealed_cards?.includes(i));
-            if (unknownIdx !== -1) {
-              if (!newGs.players[botIdx].revealed_cards) newGs.players[botIdx].revealed_cards = [];
-              newGs.players[botIdx].revealed_cards.push(unknownIdx);
-            }
-          } else if (drawnCard.value === '10') {
-            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+        if (discardedCard.value === '8') {
+          // Regarder sa propre carte inconnue
+          const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
+            c && !newGs.players[botIdx].revealed_cards?.includes(i));
+          if (unknownIdx !== -1) {
+            if (!newGs.players[botIdx].revealed_cards) newGs.players[botIdx].revealed_cards = [];
+            newGs.players[botIdx].revealed_cards.push(unknownIdx);
+            addBotLog(`Regarde sa carte ${unknownIdx + 1}`);
+          }
+
+        } else if (discardedCard.value === '10') {
+          // Regarder la carte du joueur humain — notifier !
+          const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+          if (humanIdx !== -1 && newGs.players[humanIdx].hand.length > 0) {
+            // Le bot regarde la carte avec la plus haute valeur estimée
             const targetCardIdx = 0;
             const peekedCard = newGs.players[humanIdx].hand[targetCardIdx];
-            setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value} ${peekedCard.suit === 'hearts' ? '♥' : peekedCard.suit === 'diamonds' ? '♦' : peekedCard.suit === 'clubs' ? '♣' : '♠'}`);
-            setTimeout(() => setBotRevealMessage(null), 4000);
-          } else if (drawnCard.value === 'J') {
-            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-            const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
-              getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
-            const humanLowestIdx = newGs.players[humanIdx].hand.reduce((minIdx, card, idx, arr) =>
-              getCardValue(card) < getCardValue(arr[minIdx]) ? idx : minIdx, 0);
+            if (peekedCard) {
+              addBotLog(`Regarde votre carte ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
+              setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
+              setTimeout(() => setBotRevealMessage(null), 4000);
+            }
+          }
+
+        } else if (discardedCard.value === 'J') {
+          // Échanger sa carte la plus haute avec la carte la plus basse du joueur
+          const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+          if (humanIdx !== -1 &&
+              newGs.players[botIdx].hand.length > 0 &&
+              newGs.players[humanIdx].hand.length > 0) {
+
+            const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) => {
+              if (!card) return maxIdx;
+              return getCardValue(card) > getCardValue(arr[maxIdx] || { value: '2' }) ? idx : maxIdx;
+            }, 0);
+
+            const humanLowestIdx = newGs.players[humanIdx].hand.reduce((minIdx, card, idx, arr) => {
+              if (!card) return minIdx;
+              const minCard = arr[minIdx];
+              if (!minCard) return idx;
+              return getCardValue(card) < getCardValue(minCard) ? idx : minIdx;
+            }, 0);
 
             const botCard = newGs.players[botIdx].hand[botHighestIdx];
             const humanCard = newGs.players[humanIdx].hand[humanLowestIdx];
-            newGs.players[botIdx].hand[botHighestIdx] = humanCard;
-            newGs.players[humanIdx].hand[humanLowestIdx] = botCard;
-            toast.info(`🤖 Le bot a échangé une carte avec vous!`);
+
+            if (botCard && humanCard) {
+              newGs.players[botIdx].hand[botHighestIdx] = humanCard;
+              newGs.players[humanIdx].hand[humanLowestIdx] = botCard;
+              addBotLog(`Échange son ${botCard.value} contre votre ${humanCard.value}`);
+              toast.info(`🤖 Le bot a échangé son ${botCard.value} contre votre ${humanCard.value}!`);
+            }
           }
         }
       }
@@ -331,6 +386,7 @@ export default function GameBoard({ user, onLogout }) {
 
     } catch (err) {
       console.error('Bot error:', err);
+      addBotLog(`Erreur: ${err.message}`);
     }
   };
   // ============================================================
@@ -357,10 +413,8 @@ export default function GameBoard({ user, onLogout }) {
     });
 
     if (allReady) {
-      // D'abord sauvegarder avec les cartes révélées
       await updateGameState(newGs);
 
-      // Afficher countdown 3 secondes
       toast.info('Mémorisez vos cartes! Démarrage dans 3 secondes...');
       setRevealTimer(3);
 
@@ -368,7 +422,6 @@ export default function GameBoard({ user, onLogout }) {
         setRevealTimer(prev => {
           if (prev <= 1) {
             clearInterval(revealTimerRef.current);
-            // Passer en phase playing
             const finalGs = JSON.parse(JSON.stringify(newGs));
             finalGs.phase = 'playing';
             updateGameState(finalGs);
@@ -388,7 +441,7 @@ export default function GameBoard({ user, onLogout }) {
     const newGs = JSON.parse(JSON.stringify(gameState));
 
     if (!newGs.deck || newGs.deck.length === 0) {
-      if (newGs.discard_pile.length > 1) {
+      if (newGs.discard_pile && newGs.discard_pile.length > 1) {
         const top = newGs.discard_pile.pop();
         newGs.deck = newGs.discard_pile.sort(() => Math.random() - 0.5);
         newGs.discard_pile = [top];
@@ -467,7 +520,7 @@ export default function GameBoard({ user, onLogout }) {
     if (targetPlayer) {
       const targetIdx = newGs.players.findIndex(p => p.user_id === targetPlayer);
       const card = newGs.players[targetIdx].hand[targetCardIndex];
-      if (card.value === topCard.value) {
+      if (card && card.value === topCard.value) {
         newGs.players[targetIdx].hand.splice(targetCardIndex, 1);
         newGs.discard_pile.push(card);
         if (newGs.players[targetIdx].hand.length === 0) {
@@ -476,14 +529,14 @@ export default function GameBoard({ user, onLogout }) {
         newGs.pending_give_card = { from_player: user.id, to_player: targetPlayer };
         toast.success('Slam réussi!');
       } else {
-        if (newGs.deck.length > 0) {
+        if (newGs.deck && newGs.deck.length > 0) {
           newGs.players[myPlayerIdx].hand.push(newGs.deck.pop());
         }
         toast.error('Slam raté! +1 carte');
       }
     } else {
       const card = newGs.players[myPlayerIdx].hand[cardIndex];
-      if (card.value === topCard.value) {
+      if (card && card.value === topCard.value) {
         newGs.players[myPlayerIdx].hand.splice(cardIndex, 1);
         newGs.discard_pile.push(card);
         if (newGs.players[myPlayerIdx].hand.length === 0) {
@@ -493,7 +546,7 @@ export default function GameBoard({ user, onLogout }) {
         }
         toast.success('Slam réussi!');
       } else {
-        if (newGs.deck.length > 0) {
+        if (newGs.deck && newGs.deck.length > 0) {
           newGs.players[myPlayerIdx].hand.push(newGs.deck.pop());
         }
         toast.error('Slam raté! +1 carte');
@@ -675,8 +728,18 @@ export default function GameBoard({ user, onLogout }) {
 
         {/* Notification bot */}
         {botRevealMessage && (
-          <div className="bg-orange-500 text-white p-3 rounded-lg text-center font-semibold mb-4 animate-pulse">
+          <div className="bg-orange-500 text-white p-3 rounded-lg text-center font-semibold mb-2 animate-pulse">
             {botRevealMessage}
+          </div>
+        )}
+
+        {/* Log actions bot */}
+        {botActionLog.length > 0 && (
+          <div className="bg-gray-800/80 text-white p-2 rounded-lg mb-2 text-xs space-y-1">
+            <div className="font-semibold text-gray-300">Journal du bot :</div>
+            {botActionLog.map((log, idx) => (
+              <div key={idx} className="text-gray-200">{log}</div>
+            ))}
           </div>
         )}
 
