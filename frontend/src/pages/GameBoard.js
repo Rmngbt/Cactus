@@ -33,8 +33,10 @@ export default function GameBoard({ user, onLogout }) {
   const [swapMyCard, setSwapMyCard] = useState(null);
   const [revealCountdown, setRevealCountdown] = useState(0);
   const [botRevealMessage, setBotRevealMessage] = useState(null);
+  const [revealTimer, setRevealTimer] = useState(0);
   const channelRef = useRef(null);
   const countdownRef = useRef(null);
+  const revealTimerRef = useRef(null);
   const gameStateRef = useRef(null);
   const statsUpdatedRef = useRef(false);
 
@@ -44,13 +46,12 @@ export default function GameBoard({ user, onLogout }) {
     return () => {
       if (channelRef.current) supabase.removeChannel(channelRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
+      if (revealTimerRef.current) clearInterval(revealTimerRef.current);
     };
   }, [code]);
 
   useEffect(() => {
     gameStateRef.current = gameState;
-
-    // Mettre à jour les stats quand la partie se termine
     if (gameState?.phase === 'ended' && !statsUpdatedRef.current) {
       statsUpdatedRef.current = true;
       updateStats(gameState);
@@ -128,7 +129,6 @@ export default function GameBoard({ user, onLogout }) {
           });
       }
 
-      // Marquer la room comme finished
       await supabase
         .from('game_rooms')
         .update({ state: 'finished' })
@@ -259,12 +259,10 @@ export default function GameBoard({ user, onLogout }) {
         newGs.discard_pile.push(oldCard);
         newGs.drawn_card = null;
 
-        // CARTES SPÉCIALES
         if (isSpecialCard(oldCard)) {
           await new Promise(resolve => setTimeout(resolve, 800));
 
           if (oldCard.value === '8') {
-            // Bot regarde sa propre carte
             const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
               !newGs.players[botIdx].revealed_cards?.includes(i));
             if (unknownIdx !== -1) {
@@ -272,14 +270,12 @@ export default function GameBoard({ user, onLogout }) {
               newGs.players[botIdx].revealed_cards.push(unknownIdx);
             }
           } else if (oldCard.value === '10') {
-            // Bot regarde la carte du joueur humain — notification !
             const humanIdx = newGs.players.findIndex(p => !p.is_bot);
             const targetCardIdx = 0;
             const peekedCard = newGs.players[humanIdx].hand[targetCardIdx];
             setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value} ${peekedCard.suit === 'hearts' ? '♥' : peekedCard.suit === 'diamonds' ? '♦' : peekedCard.suit === 'clubs' ? '♣' : '♠'}`);
             setTimeout(() => setBotRevealMessage(null), 4000);
           } else if (oldCard.value === 'J') {
-            // Bot échange sa carte la plus haute avec la carte la plus basse du joueur
             const humanIdx = newGs.players.findIndex(p => !p.is_bot);
             const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) =>
               getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx, 0);
@@ -361,11 +357,30 @@ export default function GameBoard({ user, onLogout }) {
     });
 
     if (allReady) {
-      newGs.phase = 'playing';
-      toast.success('La partie commence!');
-    }
+      // D'abord sauvegarder avec les cartes révélées
+      await updateGameState(newGs);
 
-    await updateGameState(newGs);
+      // Afficher countdown 3 secondes
+      toast.info('Mémorisez vos cartes! Démarrage dans 3 secondes...');
+      setRevealTimer(3);
+
+      revealTimerRef.current = setInterval(() => {
+        setRevealTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(revealTimerRef.current);
+            // Passer en phase playing
+            const finalGs = JSON.parse(JSON.stringify(newGs));
+            finalGs.phase = 'playing';
+            updateGameState(finalGs);
+            toast.success('La partie commence!');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      await updateGameState(newGs);
+    }
   };
 
   const handleDrawDeck = async () => {
@@ -677,10 +692,25 @@ export default function GameBoard({ user, onLogout }) {
                 <div className="text-center mb-4 font-semibold">
                   {myPlayer?.revealed_cards?.length || 0} / {gameState.cards_to_reveal} révélées
                 </div>
+
+                {revealTimer > 0 && (
+                  <div className="text-center mb-4">
+                    <div className="text-2xl font-bold text-accent animate-pulse">
+                      Mémorisez! Démarrage dans {revealTimer}s
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+                      <div
+                        className="bg-accent h-2 rounded-full transition-all duration-1000"
+                        style={{ width: `${(revealTimer / 3) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap justify-center gap-3">
                   {myPlayer?.hand?.map((card, idx) => {
                     const isRevealed = myPlayer.revealed_cards?.includes(idx);
-                    const canReveal = (myPlayer.revealed_cards?.length || 0) < gameState.cards_to_reveal;
+                    const canReveal = (myPlayer.revealed_cards?.length || 0) < gameState.cards_to_reveal && revealTimer === 0;
                     return (
                       <button
                         key={idx}
