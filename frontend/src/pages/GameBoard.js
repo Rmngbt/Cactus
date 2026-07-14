@@ -51,6 +51,7 @@ export default function GameBoard({ user, onLogout }) {
   const statsUpdatedRef = useRef(false);
   const roomRef = useRef(null);
   const botBusyRef = useRef(false);
+  const botSlamKeyRef = useRef(null);
 
   useEffect(() => {
     fetchRoom();
@@ -86,6 +87,73 @@ export default function GameBoard({ user, onLogout }) {
       botBusyRef.current = false;
     });
   }, [gameState]);
+
+  // Slam hors-tour du bot : comme un vrai joueur, il surveille la défausse
+  // en permanence. S'il possède une carte identique au sommet pendant le
+  // tour de l'humain, il peut la slammer (probabilité et vitesse selon la
+  // difficulté). Le tour en cours n'est pas modifié : le jeu reprend ensuite.
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'playing') return;
+    if (gameState.drawn_card || gameState.awaiting_special_action || gameState.pending_give_card) return;
+
+    const botIdx = gameState.players.findIndex(p => p.is_bot);
+    if (botIdx === -1) return;
+    // Pendant son propre tour, le slam est géré dans executeBotTurn
+    if (gameState.players[gameState.current_player_index]?.is_bot) return;
+
+    const top = gameState.discard_pile?.[gameState.discard_pile.length - 1];
+    if (!top) return;
+    const botHand = gameState.players[botIdx].hand || [];
+    if (!botHand.some(c => c && c.value === top.value)) return;
+
+    // Une seule tentative par occasion (même sommet + même main)
+    const slamKey = `${gameState.discard_pile.length}-${top.value}-${top.suit}-${botHand.length}`;
+    if (botSlamKeyRef.current === slamKey) return;
+    botSlamKeyRef.current = slamKey;
+
+    const difficulty = roomRef.current?.config?.bot_difficulty || 'medium';
+    const slamChance = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.7 : 1;
+    if (Math.random() > slamChance) return;
+
+    const delay = difficulty === 'hard' ? 900 : 1500;
+    const timer = setTimeout(() => executeBotSlam(), delay);
+    return () => clearTimeout(timer);
+  }, [gameState]);
+
+  // Exécute le slam hors-tour en revalidant l'état au moment de l'action
+  // (l'humain a pu jouer entre-temps).
+  const executeBotSlam = async () => {
+    const gs = gameStateRef.current;
+    if (!gs || gs.phase !== 'playing') return;
+    if (gs.drawn_card || gs.awaiting_special_action || gs.pending_give_card) return;
+
+    const newGs = JSON.parse(JSON.stringify(gs));
+    const botIdx = newGs.players.findIndex(p => p.is_bot);
+    if (botIdx === -1) return;
+
+    const top = newGs.discard_pile?.[newGs.discard_pile.length - 1];
+    if (!top) return;
+    const slamIdx = newGs.players[botIdx].hand.findIndex(c => c && c.value === top.value);
+    if (slamIdx === -1) return;
+
+    const slammedCard = newGs.players[botIdx].hand.splice(slamIdx, 1)[0];
+    newGs.discard_pile.push(slammedCard);
+    addBotLog(`Slam ! Défausse un ${slammedCard.value}`);
+    toast.info(`🤖 Le bot slamme un ${slammedCard.value}!`);
+
+    if (newGs.players[botIdx].hand.length === 0) {
+      addBotLog('Perfect Cactus !');
+      newGs.cactus_called = true;
+      newGs.cactus_caller = 'bot';
+      newGs.perfect_cactus_players = [...(newGs.perfect_cactus_players || []), 'bot'];
+      const finished = endRound(newGs);
+      await updateGameState(finished);
+      return;
+    }
+
+    // Le tour en cours n'est pas modifié : le jeu reprend là où il en était
+    await updateGameState(newGs);
+  };
 
   const addBotLog = (message) => {
     setBotActionLog(prev => [...prev.slice(-4), `🤖 ${message}`]);
@@ -291,15 +359,16 @@ export default function GameBoard({ user, onLogout }) {
       const bot = newGs.players[botIdx];
       if (!bot.hand || bot.hand.length === 0) return;
 
-      const botScore = calculateScore(bot.hand);
-      const topDiscard = newGs.discard_pile?.length > 0
+      // 1. SLAM — défausse rapide. Le slam est une action « hors tour » :
+      // il ne consomme PAS le tour, le bot joue ensuite normalement.
+      const slamTop = newGs.discard_pile?.length > 0
         ? newGs.discard_pile[newGs.discard_pile.length - 1]
         : null;
-
-      // 1. SLAM — vérifier si le bot peut faire une défausse rapide
-      if (topDiscard && topDiscard.value) {
-        const slamIdx = bot.hand.findIndex(c => c && c.value === topDiscard.value);
+      let justSlammed = false;
+      if (slamTop && slamTop.value) {
+        const slamIdx = bot.hand.findIndex(c => c && c.value === slamTop.value);
         if (slamIdx !== -1) {
+          justSlammed = true;
           const slammedCard = newGs.players[botIdx].hand.splice(slamIdx, 1)[0];
           addBotLog(`Slam ! Défausse un ${slammedCard.value}`);
           newGs.discard_pile.push(slammedCard);
@@ -314,13 +383,14 @@ export default function GameBoard({ user, onLogout }) {
             setGameState(finished);
             return;
           }
-
-          const updated = advanceTurn(newGs);
-          await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
-          setGameState(updated);
-          return;
+          // pas de return : le tour du bot continue après le slam
         }
       }
+
+      const botScore = calculateScore(bot.hand);
+      const topDiscard = newGs.discard_pile?.length > 0
+        ? newGs.discard_pile[newGs.discard_pile.length - 1]
+        : null;
 
       // 2. CACTUS — appeler si score bas selon difficulté
       const currentRoom = roomRef.current;
@@ -361,7 +431,7 @@ export default function GameBoard({ user, onLogout }) {
         ? Math.max(...bot.hand.filter(c => c).map(c => getCardValue(c)))
         : 0;
 
-      if (topDiscard && discardValue < worstCardValue && newGs.discard_pile.length > 0) {
+      if (!justSlammed && topDiscard && discardValue < worstCardValue && newGs.discard_pile.length > 0) {
         drawnCard = newGs.discard_pile.pop();
         addBotLog(`Prend la défausse : ${drawnCard?.value}`);
       } else if (newGs.deck && newGs.deck.length > 0) {
