@@ -125,7 +125,10 @@ export default function GameRoom({ user, onLogout }) {
       const playersWithCards = players.map(player => ({
         ...player,
         hand: deck.splice(0, config.cards_per_player),
-        revealed_cards: player.is_bot ? Array.from({length: config.cards_per_player}, (_, i) => i) : [],
+        // Le bot mémorise le même nombre de cartes de départ que les humains
+        revealed_cards: player.is_bot
+          ? Array.from({ length: config.visible_at_start }, (_, i) => i)
+          : [],
         total_score: 0,
         round_score: 0
       }));

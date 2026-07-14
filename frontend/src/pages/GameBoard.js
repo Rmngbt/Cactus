@@ -33,6 +33,45 @@ function getSuitSymbol(suit) {
   return symbols[suit] || '?';
 }
 
+// ============================================================
+// MÉMOIRE DU BOT — le bot joue avec la même information qu'un humain :
+// il ne « connaît » que les cartes listées dans revealed_cards (ses X
+// cartes de départ + celles que le jeu lui a montrées ensuite).
+// ============================================================
+const AVG_CARD_VALUE = 5.5; // espérance de la valeur d'une carte inconnue
+
+function knownIndexes(player) {
+  const len = player.hand?.length || 0;
+  return (player.revealed_cards || []).filter(i => i >= 0 && i < len);
+}
+
+// Score que le bot PENSE avoir : cartes connues + moyenne pour les inconnues
+function estimateScore(player) {
+  const known = knownIndexes(player);
+  const knownSum = known.reduce((sum, i) => sum + getCardValue(player.hand[i]), 0);
+  const unknownCount = (player.hand?.length || 0) - known.length;
+  return knownSum + unknownCount * AVG_CARD_VALUE;
+}
+
+// Retire une carte de la main en gardant la mémoire cohérente
+// (les index des cartes suivantes se décalent)
+function removeCardKeepMemory(player, idx) {
+  const card = player.hand.splice(idx, 1)[0];
+  player.revealed_cards = (player.revealed_cards || [])
+    .filter(i => i !== idx)
+    .map(i => (i > idx ? i - 1 : i));
+  return card;
+}
+
+function rememberCardAt(player, idx) {
+  if (!player.revealed_cards) player.revealed_cards = [];
+  if (!player.revealed_cards.includes(idx)) player.revealed_cards.push(idx);
+}
+
+function forgetCardAt(player, idx) {
+  player.revealed_cards = (player.revealed_cards || []).filter(i => i !== idx);
+}
+
 export default function GameBoard({ user, onLogout }) {
   const { code } = useParams();
   const navigate = useNavigate();
@@ -103,8 +142,10 @@ export default function GameBoard({ user, onLogout }) {
 
     const top = gameState.discard_pile?.[gameState.discard_pile.length - 1];
     if (!top) return;
-    const botHand = gameState.players[botIdx].hand || [];
-    if (!botHand.some(c => c && c.value === top.value)) return;
+    const botPlayer = gameState.players[botIdx];
+    const botHand = botPlayer.hand || [];
+    // Le bot ne peut slammer qu'une carte qu'il CONNAÎT
+    if (!knownIndexes(botPlayer).some(i => botHand[i] && botHand[i].value === top.value)) return;
 
     // Une seule tentative par occasion (même sommet + même main)
     const slamKey = `${gameState.discard_pile.length}-${top.value}-${top.suit}-${botHand.length}`;
@@ -133,10 +174,12 @@ export default function GameBoard({ user, onLogout }) {
 
     const top = newGs.discard_pile?.[newGs.discard_pile.length - 1];
     if (!top) return;
-    const slamIdx = newGs.players[botIdx].hand.findIndex(c => c && c.value === top.value);
-    if (slamIdx === -1) return;
+    const botPlayer = newGs.players[botIdx];
+    const slamIdx = knownIndexes(botPlayer).find(i =>
+      botPlayer.hand[i] && botPlayer.hand[i].value === top.value);
+    if (slamIdx === undefined) return;
 
-    const slammedCard = newGs.players[botIdx].hand.splice(slamIdx, 1)[0];
+    const slammedCard = removeCardKeepMemory(botPlayer, slamIdx);
     newGs.discard_pile.push(slammedCard);
     addBotLog(`Slam ! Défausse un ${slammedCard.value}`);
     toast.info(`🤖 Le bot slamme un ${slammedCard.value}!`);
@@ -321,8 +364,9 @@ export default function GameBoard({ user, onLogout }) {
     const players = gameState.players.map(p => ({
       ...p,
       hand: deck.splice(0, cardsPerPlayer),
+      // Le bot mémorise le même nombre de cartes de départ que les humains
       revealed_cards: p.is_bot
-        ? Array.from({ length: cardsPerPlayer }, (_, i) => i)
+        ? Array.from({ length: config.visible_at_start || 2 }, (_, i) => i)
         : [],
       round_score: 0
     }));
@@ -361,19 +405,21 @@ export default function GameBoard({ user, onLogout }) {
 
       // 1. SLAM — défausse rapide. Le slam est une action « hors tour » :
       // il ne consomme PAS le tour, le bot joue ensuite normalement.
+      // Le bot ne peut slammer qu'une carte qu'il CONNAÎT.
       const slamTop = newGs.discard_pile?.length > 0
         ? newGs.discard_pile[newGs.discard_pile.length - 1]
         : null;
       let justSlammed = false;
       if (slamTop && slamTop.value) {
-        const slamIdx = bot.hand.findIndex(c => c && c.value === slamTop.value);
-        if (slamIdx !== -1) {
+        const slamIdx = knownIndexes(bot).find(i =>
+          bot.hand[i] && bot.hand[i].value === slamTop.value);
+        if (slamIdx !== undefined) {
           justSlammed = true;
-          const slammedCard = newGs.players[botIdx].hand.splice(slamIdx, 1)[0];
+          const slammedCard = removeCardKeepMemory(bot, slamIdx);
           addBotLog(`Slam ! Défausse un ${slammedCard.value}`);
           newGs.discard_pile.push(slammedCard);
 
-          if (newGs.players[botIdx].hand.length === 0) {
+          if (bot.hand.length === 0) {
             addBotLog('Perfect Cactus !');
             newGs.cactus_called = true;
             newGs.cactus_caller = 'bot';
@@ -387,19 +433,20 @@ export default function GameBoard({ user, onLogout }) {
         }
       }
 
-      const botScore = calculateScore(bot.hand);
+      // Score que le bot PENSE avoir (cartes connues + moyenne pour les inconnues)
+      const estimatedScore = estimateScore(bot);
       const topDiscard = newGs.discard_pile?.length > 0
         ? newGs.discard_pile[newGs.discard_pile.length - 1]
         : null;
 
-      // 2. CACTUS — appeler si score bas selon difficulté
+      // 2. CACTUS — appeler si le score estimé est bas selon la difficulté
       const currentRoom = roomRef.current;
       // Plus le bot est fort, plus il attend un score bas avant d'appeler Cactus.
       const difficulty = currentRoom?.config?.bot_difficulty || 'medium';
       const cactusThreshold = difficulty === 'easy' ? 18 : difficulty === 'medium' ? 12 : 6;
 
-      if (botScore <= cactusThreshold && !newGs.cactus_called) {
-        addBotLog(`Appelle Cactus ! (score: ${botScore})`);
+      if (estimatedScore <= cactusThreshold && !newGs.cactus_called) {
+        addBotLog(`Appelle Cactus !`);
         newGs.cactus_called = true;
         newGs.cactus_caller = 'bot';
         newGs.cactus_caller_username = bot.username;
@@ -424,14 +471,18 @@ export default function GameBoard({ user, onLogout }) {
         }
       }
 
-      // 4. CHOISIR entre pioche et défausse
+      // 4. CHOISIR entre pioche et défausse — sur la base des cartes CONNUES
+      const known = knownIndexes(bot);
+      const worstKnownIdx = known.length > 0
+        ? known.reduce((a, b) => getCardValue(bot.hand[a]) >= getCardValue(bot.hand[b]) ? a : b)
+        : -1;
+      const worstKnownValue = worstKnownIdx !== -1 ? getCardValue(bot.hand[worstKnownIdx]) : null;
+
       let drawnCard = null;
       const discardValue = topDiscard ? getCardValue(topDiscard) : 999;
-      const worstCardValue = bot.hand.length > 0
-        ? Math.max(...bot.hand.filter(c => c).map(c => getCardValue(c)))
-        : 0;
 
-      if (!justSlammed && topDiscard && discardValue < worstCardValue && newGs.discard_pile.length > 0) {
+      if (!justSlammed && topDiscard && worstKnownValue !== null &&
+          discardValue < worstKnownValue && newGs.discard_pile.length > 0) {
         drawnCard = newGs.discard_pile.pop();
         addBotLog(`Prend la défausse : ${drawnCard?.value}`);
       } else if (newGs.deck && newGs.deck.length > 0) {
@@ -446,27 +497,38 @@ export default function GameBoard({ user, onLogout }) {
 
       // 5. DÉCIDER quoi faire avec la carte piochée
       const drawnValue = getCardValue(drawnCard);
-      const highestCardIdx = bot.hand.reduce((maxIdx, card, idx, arr) => {
-        if (!card) return maxIdx;
-        return getCardValue(card) > getCardValue(arr[maxIdx] || { value: '2' }) ? idx : maxIdx;
-      }, 0);
-      const highestCardValue = bot.hand[highestCardIdx] ? getCardValue(bot.hand[highestCardIdx]) : 0;
-
       let discardedCard = null;
 
-      if (drawnValue < highestCardValue) {
-        // Échanger avec la carte la plus haute
-        discardedCard = newGs.players[botIdx].hand[highestCardIdx];
-        newGs.players[botIdx].hand[highestCardIdx] = drawnCard;
+      if (worstKnownIdx !== -1 && drawnValue < worstKnownValue) {
+        // Remplacer sa pire carte CONNUE (le bot voit la carte qu'il pose : il la mémorise)
+        discardedCard = bot.hand[worstKnownIdx];
+        bot.hand[worstKnownIdx] = drawnCard;
+        rememberCardAt(bot, worstKnownIdx);
         newGs.discard_pile.push(discardedCard);
         newGs.drawn_card = null;
         addBotLog(`Échange ${discardedCard?.value} contre ${drawnCard.value}`);
       } else {
-        // Défausser la carte piochée
-        discardedCard = drawnCard;
-        newGs.discard_pile.push(discardedCard);
-        newGs.drawn_card = null;
-        addBotLog(`Défausse ${discardedCard?.value}`);
+        const unknownIdxs = bot.hand
+          .map((c, i) => i)
+          .filter(i => !known.includes(i));
+
+        if (unknownIdxs.length > 0 && drawnValue <= AVG_CARD_VALUE) {
+          // Carte piochée meilleure que la moyenne : parier en remplaçant
+          // une carte inconnue (comme un vrai joueur)
+          const targetIdx = unknownIdxs[Math.floor(Math.random() * unknownIdxs.length)];
+          discardedCard = bot.hand[targetIdx];
+          bot.hand[targetIdx] = drawnCard;
+          rememberCardAt(bot, targetIdx);
+          newGs.discard_pile.push(discardedCard);
+          newGs.drawn_card = null;
+          addBotLog(`Remplace une carte inconnue par ${drawnCard.value}`);
+        } else {
+          // Défausser la carte piochée
+          discardedCard = drawnCard;
+          newGs.discard_pile.push(discardedCard);
+          newGs.drawn_card = null;
+          addBotLog(`Défausse ${discardedCard?.value}`);
+        }
       }
 
       // 6. CARTES SPÉCIALES
@@ -474,12 +536,11 @@ export default function GameBoard({ user, onLogout }) {
         await new Promise(resolve => setTimeout(resolve, 800));
 
         if (discardedCard.value === '8') {
-          // Regarder sa propre carte inconnue
-          const unknownIdx = newGs.players[botIdx].hand.findIndex((c, i) =>
-            c && !newGs.players[botIdx].revealed_cards?.includes(i));
+          // Regarder une de ses cartes inconnues (elle rejoint sa mémoire)
+          const unknownIdx = bot.hand.findIndex((c, i) =>
+            c && !knownIndexes(bot).includes(i));
           if (unknownIdx !== -1) {
-            if (!newGs.players[botIdx].revealed_cards) newGs.players[botIdx].revealed_cards = [];
-            newGs.players[botIdx].revealed_cards.push(unknownIdx);
+            rememberCardAt(bot, unknownIdx);
             addBotLog(`Regarde sa carte ${unknownIdx + 1}`);
           }
 
@@ -498,28 +559,30 @@ export default function GameBoard({ user, onLogout }) {
           }
 
         } else if (discardedCard.value === 'J') {
-          // Échanger sa carte la plus haute avec la carte la plus basse du joueur
+          // Échanger sa pire carte CONNUE contre une carte adverse au hasard
           const humanIdx = newGs.players.findIndex(p => !p.is_bot);
           if (humanIdx !== -1 &&
-              newGs.players[botIdx].hand.length > 0 &&
+              bot.hand.length > 0 &&
               newGs.players[humanIdx].hand.length > 0) {
 
-            const botHighestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) => {
-              if (!card) return maxIdx;
-              return getCardValue(card) > getCardValue(arr[maxIdx] || { value: '2' }) ? idx : maxIdx;
-            }, 0);
+            const knownNow = knownIndexes(bot);
+            const botGiveIdx = knownNow.length > 0
+              ? knownNow.reduce((a, b) => getCardValue(bot.hand[a]) >= getCardValue(bot.hand[b]) ? a : b)
+              : Math.floor(Math.random() * bot.hand.length);
 
-            // Le bot ne connaît pas les cartes de l'adversaire : il en prend une au hasard
+            // Il ne connaît pas les cartes de l'adversaire : il en prend une au hasard
             const humanTargetIdx = Math.floor(Math.random() * newGs.players[humanIdx].hand.length);
 
-            const botCard = newGs.players[botIdx].hand[botHighestIdx];
+            const botCard = bot.hand[botGiveIdx];
             const humanCard = newGs.players[humanIdx].hand[humanTargetIdx];
 
             if (botCard && humanCard) {
-              newGs.players[botIdx].hand[botHighestIdx] = humanCard;
+              bot.hand[botGiveIdx] = humanCard;
               newGs.players[humanIdx].hand[humanTargetIdx] = botCard;
-              addBotLog(`Échange son ${botCard.value} contre votre ${humanCard.value}`);
-              toast.info(`🤖 Le bot a échangé son ${botCard.value} contre votre ${humanCard.value}!`);
+              // La carte reçue est inconnue : le bot l'oublie de sa mémoire
+              forgetCardAt(bot, botGiveIdx);
+              addBotLog(`Échange sa carte ${botGiveIdx + 1} contre votre carte ${humanTargetIdx + 1}`);
+              toast.info(`🤖 Le bot a échangé une de ses cartes contre votre carte ${humanTargetIdx + 1}!`);
             }
           }
         }
@@ -660,7 +723,7 @@ export default function GameBoard({ user, onLogout }) {
       const targetIdx = newGs.players.findIndex(p => p.user_id === targetPlayer);
       const card = newGs.players[targetIdx].hand[targetCardIndex];
       if (card && card.value === topCard.value) {
-        newGs.players[targetIdx].hand.splice(targetCardIndex, 1);
+        removeCardKeepMemory(newGs.players[targetIdx], targetCardIndex);
         newGs.discard_pile.push(card);
         if (newGs.players[targetIdx].hand.length === 0) {
           const finished = endRound(newGs);
@@ -679,7 +742,7 @@ export default function GameBoard({ user, onLogout }) {
     } else {
       const card = newGs.players[myPlayerIdx].hand[cardIndex];
       if (card && card.value === topCard.value) {
-        newGs.players[myPlayerIdx].hand.splice(cardIndex, 1);
+        removeCardKeepMemory(newGs.players[myPlayerIdx], cardIndex);
         newGs.discard_pile.push(card);
         if (newGs.players[myPlayerIdx].hand.length === 0) {
           // Perfect Cactus : main vidée par défausse rapide
@@ -782,6 +845,8 @@ export default function GameBoard({ user, onLogout }) {
     const targetCard = newGs.players[targetIdx].hand[targetCardIndex];
     newGs.players[myPlayerIdx].hand[myCardIndex] = targetCard;
     newGs.players[targetIdx].hand[targetCardIndex] = myCard;
+    // L'adversaire reçoit une carte qu'il n'a pas vue : elle sort de sa mémoire
+    forgetCardAt(newGs.players[targetIdx], targetCardIndex);
 
     newGs.special_card_available = false;
     newGs.special_card_player = null;
@@ -819,7 +884,8 @@ export default function GameBoard({ user, onLogout }) {
     const myPlayerIdx = newGs.players.findIndex(p => p.user_id === user.id);
     const targetIdx = newGs.players.findIndex(p => p.user_id === newGs.pending_give_card.to_player);
 
-    const card = newGs.players[myPlayerIdx].hand.splice(cardIndex, 1)[0];
+    const card = removeCardKeepMemory(newGs.players[myPlayerIdx], cardIndex);
+    // La carte reçue est inconnue du destinataire : pas d'ajout à sa mémoire
     newGs.players[targetIdx].hand.push(card);
     newGs.pending_give_card = null;
 
