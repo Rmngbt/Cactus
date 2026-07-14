@@ -1519,49 +1519,76 @@ export default function GameBoard({ user, onLogout }) {
             </div>
           )}
 
-          {/* Fin de partie */}
-          {gameState.phase === 'ended' && (
-            <div className="bg-yellow-500 text-black p-4 rounded-lg text-center space-y-3">
-              <div className="text-2xl font-bold">🏆 Partie Terminée!</div>
-              <div className="space-y-2">
-                {[...gameState.players]
-                  .sort((a, b) => (a.total_score || 0) - (b.total_score || 0))
-                  .map((player, idx) => (
-                    <div
-                      key={player.user_id}
-                      className={`p-2 rounded space-y-2 ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}
-                    >
-                      <div className="flex justify-between">
-                        <span>
-                          {idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}
-                          {player.cactus_penalty && (
-                            <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
-                              Cactus raté +10
-                            </span>
-                          )}
-                        </span>
-                        <span>{player.total_score || 0} points</span>
-                      </div>
-                      <div className="flex flex-wrap justify-center gap-1">
-                        {player.hand?.map((card, i) => (
-                          <GameCard key={i} card={card} size="sm" />
-                        ))}
-                      </div>
+          {/* Fin de partie : pop-up plein écran avec le vainqueur */}
+          {gameState.phase === 'ended' && (() => {
+            const ranking = [...gameState.players]
+              .sort((a, b) => (a.total_score || 0) - (b.total_score || 0));
+            const bestScore = ranking[0]?.total_score || 0;
+            const winners = ranking.filter(p => (p.total_score || 0) === bestScore);
+            const iWon = winners.some(p => p.user_id === user.id);
+            const history = gameState.rounds_history || [];
+            const winsOf = (uid) => history.filter(h => h.winner_ids?.includes(uid)).length;
+
+            return (
+              <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
+                <Card className="w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl">
+                  <CardContent className="p-6 text-center space-y-4">
+                    <div className="text-6xl">{iWon ? '🎉' : '🏆'}</div>
+                    <div className="text-3xl font-bold" style={{ fontFamily: 'Fredoka, sans-serif' }}>
+                      {iWon
+                        ? 'Vous avez gagné!'
+                        : winners.length > 1
+                          ? 'Égalité!'
+                          : `${winners[0]?.username} a gagné!`}
                     </div>
-                  ))}
+                    <div className="text-muted-foreground">
+                      Partie terminée en {history.length || gameState.round} manche{(history.length || gameState.round) > 1 ? 's' : ''}
+                    </div>
+
+                    <div className="space-y-2 text-left">
+                      {ranking.map((player, idx) => (
+                        <div
+                          key={player.user_id}
+                          className={`p-3 rounded-lg space-y-2 ${idx === 0 ? 'bg-green-100 border-2 border-green-400 font-bold' : 'bg-muted'}`}
+                        >
+                          <div className="flex justify-between items-center">
+                            <span>
+                              {idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}
+                              {player.user_id === user.id && (
+                                <span className="ml-2 text-xs bg-primary text-white px-2 py-0.5 rounded">Vous</span>
+                              )}
+                            </span>
+                            <span className="text-right">
+                              <span className="text-lg">{player.total_score || 0} pts</span>
+                              <span className="block text-xs text-muted-foreground font-normal">
+                                {winsOf(player.user_id)} manche{winsOf(player.user_id) > 1 ? 's' : ''} gagnée{winsOf(player.user_id) > 1 ? 's' : ''} 🏆
+                              </span>
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap justify-center gap-1">
+                            {player.hand?.map((card, i) => (
+                              <GameCard key={i} card={card} size="sm" />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex justify-center gap-3 pt-2">
+                      {room?.creator_id === user.id && (
+                        <Button onClick={handleReplay} className="desert-button bg-accent hover:bg-accent/90">
+                          🔄 Rejouer
+                        </Button>
+                      )}
+                      <Button onClick={() => navigate('/lobby')} variant="outline" className="desert-button">
+                        Retour au lobby
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
-              <div className="flex justify-center gap-3 mt-4">
-                {room?.creator_id === user.id && (
-                  <Button onClick={handleReplay} className="desert-button bg-accent hover:bg-accent/90">
-                    🔄 Rejouer
-                  </Button>
-                )}
-                <Button onClick={() => navigate('/lobby')} className="desert-button">
-                  Retour au lobby
-                </Button>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       </div>
     </div>
