@@ -38,6 +38,7 @@ export default function GameRoom({ user, onLogout }) {
       return;
     }
 
+    let roomData = data;
     const players = data.game_state?.players || [];
     const alreadyIn = players.find(p => p.user_id === user.id);
 
@@ -48,18 +49,24 @@ export default function GameRoom({ user, onLogout }) {
         is_ready: false
       }];
 
-      await supabase
+      // .select() renvoie la ligne mise à jour : l'état local inclut
+      // immédiatement le joueur, sans dépendre de l'événement realtime
+      const { data: updatedRoom } = await supabase
         .from('game_rooms')
         .update({ game_state: { ...data.game_state, players: newPlayers } })
-        .eq('code', code.toUpperCase());
+        .eq('code', code.toUpperCase())
+        .select()
+        .single();
+
+      if (updatedRoom) roomData = updatedRoom;
     }
 
-    if (data.state === 'playing') {
+    if (roomData.state === 'playing') {
       navigate(`/game/${code}`);
       return;
     }
 
-    setRoom(data);
+    setRoom(roomData);
     setLoading(false);
   };
 
@@ -87,7 +94,24 @@ export default function GameRoom({ user, onLogout }) {
     try {
       const deck = createDeck();
       const config = room.config;
-      const players = room.game_state?.players || [];
+
+      // Relire la salle en base : la liste locale des joueurs peut être
+      // en retard (realtime manqué) — on ne démarre jamais sans soi-même
+      const { data: freshRoom } = await supabase
+        .from('game_rooms')
+        .select('*')
+        .eq('code', code.toUpperCase())
+        .single();
+
+      const players = [...((freshRoom || room).game_state?.players || [])];
+
+      if (!players.find(p => p.user_id === user.id)) {
+        players.push({
+          user_id: user.id,
+          username: user.username,
+          is_ready: false
+        });
+      }
 
       if (room.mode === 'bot') {
         players.push({
