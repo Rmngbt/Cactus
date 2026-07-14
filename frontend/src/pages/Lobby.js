@@ -181,7 +181,7 @@ export default function Lobby({ user, onLogout }) {
             <p>🎴 <strong>Actions:</strong> Piochez, échangez ou défaussez des cartes à votre tour</p>
             <p>✨ <strong>Cartes spéciales:</strong> 8 (voir sa carte), 10 (voir carte adverse), V (échanger)</p>
             <p>⚡ <strong>Défausse rapide:</strong> Défaussez instantanément une carte identique</p>
-            <p>🌵 <strong>Cactus:</strong> Annoncez quand vous pensez avoir le meilleur score</p>
+            <p>🌵 <strong>Cactus:</strong> Annoncez quand vous pensez avoir le meilleur score (raté = +10 points de pénalité!)</p>
           </CardContent>
         </Card>
       </div>

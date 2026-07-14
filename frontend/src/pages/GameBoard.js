@@ -208,15 +208,28 @@ export default function GameBoard({ user, onLogout }) {
     return newGs;
   };
 
-  // Clôture une manche : calcule les scores, les cumule, puis décide si la
-  // partie continue (num_rounds / score_threshold de la config) ou s'arrête.
+  // Clôture une manche : calcule les scores (avec pénalité de +10 pour un
+  // Cactus raté), les cumule, puis décide si la partie continue
+  // (num_rounds / score_threshold de la config) ou s'arrête.
+  const CACTUS_PENALTY = 10;
+
   const endRound = (gs) => {
     const newGs = { ...gs };
-    newGs.players = newGs.players.map(p => {
-      const roundScore = calculateScore(p.hand);
+    const roundScores = newGs.players.map(p => calculateScore(p.hand));
+    const minScore = Math.min(...roundScores);
+
+    newGs.players = newGs.players.map((p, idx) => {
+      let roundScore = roundScores[idx];
+      // Cactus raté : l'annonceur n'a pas le score strictement le plus bas
+      const missedCactus = newGs.cactus_called &&
+        newGs.cactus_caller === p.user_id &&
+        roundScore > minScore;
+      if (missedCactus) roundScore += CACTUS_PENALTY;
+
       return {
         ...p,
         round_score: roundScore,
+        cactus_penalty: missedCactus,
         total_score: (p.total_score || 0) + roundScore
       };
     });
@@ -1085,7 +1098,14 @@ export default function GameBoard({ user, onLogout }) {
                   .sort((a, b) => (a.total_score || 0) - (b.total_score || 0))
                   .map((player) => (
                     <div key={player.user_id} className="flex justify-between p-2 rounded bg-white/50">
-                      <span>{player.username}</span>
+                      <span>
+                        {player.username}
+                        {player.cactus_penalty && (
+                          <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
+                            Cactus raté +10
+                          </span>
+                        )}
+                      </span>
                       <span>
                         +{player.round_score || 0} pts (total : {player.total_score || 0})
                       </span>
@@ -1116,7 +1136,14 @@ export default function GameBoard({ user, onLogout }) {
                       key={player.user_id}
                       className={`flex justify-between p-2 rounded ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}
                     >
-                      <span>{idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}</span>
+                      <span>
+                        {idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}
+                        {player.cactus_penalty && (
+                          <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
+                            Cactus raté +10
+                          </span>
+                        )}
+                      </span>
                       <span>{player.total_score || 0} points</span>
                     </div>
                   ))}
