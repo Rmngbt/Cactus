@@ -397,24 +397,39 @@ export default function GameBoard({ user, onLogout }) {
 
   const endRound = (gs) => {
     const newGs = { ...gs };
-    const roundScores = newGs.players.map(p => calculateScore(p.hand));
-    const minScore = Math.min(...roundScores);
+    const rawScores = newGs.players.map(p => calculateScore(p.hand));
+    const minRaw = Math.min(...rawScores);
 
-    newGs.players = newGs.players.map((p, idx) => {
-      let roundScore = roundScores[idx];
-      // Cactus raté : l'annonceur n'a pas le score strictement le plus bas
-      const missedCactus = newGs.cactus_called &&
+    // Score de manche final (pénalité de Cactus raté incluse)
+    const finalScores = newGs.players.map((p, idx) => {
+      const missed = newGs.cactus_called &&
         newGs.cactus_caller === p.user_id &&
-        roundScore > minScore;
-      if (missedCactus) roundScore += CACTUS_PENALTY;
-
-      return {
-        ...p,
-        round_score: roundScore,
-        cactus_penalty: missedCactus,
-        total_score: (p.total_score || 0) + roundScore
-      };
+        rawScores[idx] > minRaw;
+      return { missed, score: missed ? rawScores[idx] + CACTUS_PENALTY : rawScores[idx] };
     });
+
+    // Historique des manches : source de vérité du cumul (append-only,
+    // les totaux sont TOUJOURS recalculés depuis cet historique)
+    const minFinal = Math.min(...finalScores.map(f => f.score));
+    const entry = { round: newGs.round, scores: {}, winner_ids: [] };
+    newGs.players.forEach((p, idx) => {
+      entry.scores[p.user_id] = finalScores[idx].score;
+      if (finalScores[idx].score === minFinal) entry.winner_ids.push(p.user_id);
+    });
+
+    const history = (newGs.rounds_history || []).filter(h => h.round !== newGs.round);
+    history.push(entry);
+    newGs.rounds_history = history;
+
+    const totalFor = (uid) =>
+      history.reduce((sum, h) => sum + (h.scores?.[uid] || 0), 0);
+
+    newGs.players = newGs.players.map((p, idx) => ({
+      ...p,
+      round_score: finalScores[idx].score,
+      cactus_penalty: finalScores[idx].missed,
+      total_score: totalFor(p.user_id)
+    }));
 
     const config = roomRef.current?.config || {};
     const numRounds = config.num_rounds || 1;
@@ -456,6 +471,8 @@ export default function GameBoard({ user, onLogout }) {
       cactus_caller_username: null,
       remaining_final_turns: 0,
       perfect_cactus_players: gameState.perfect_cactus_players || [],
+      // L'historique des manches est la source de vérité du cumul
+      rounds_history: gameState.rounds_history || [],
       game_id: gameState.game_id,
       // Conserver la version pour que le verrou optimiste accepte l'écriture
       _v: gameState._v
@@ -496,6 +513,7 @@ export default function GameBoard({ user, onLogout }) {
       cactus_caller_username: null,
       remaining_final_turns: 0,
       perfect_cactus_players: [],
+      rounds_history: [],
       // Identifiant unique de la partie : les stats de la revanche
       // seront bien comptées (clé anti-double comptage distincte)
       game_id: `g${Date.now()}`,
@@ -1130,6 +1148,40 @@ export default function GameBoard({ user, onLogout }) {
             <div>Pioche: {gameState.deck?.length || 0}</div>
           </div>
         </div>
+
+        {/* Tableau récap des manches */}
+        {gameState.rounds_history?.length > 0 && (
+          <Card className="mb-2 bg-white/90 shadow-lg">
+            <CardContent className="p-2 px-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-muted-foreground border-b">
+                    <th className="text-left py-1 font-medium">Joueur</th>
+                    <th className="text-center py-1 font-medium">Manches gagnées 🏆</th>
+                    <th className="text-right py-1 font-medium">Score cumulé</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gameState.players.map((p) => {
+                    const wins = gameState.rounds_history.filter(
+                      h => h.winner_ids?.includes(p.user_id)).length;
+                    const total = gameState.rounds_history.reduce(
+                      (sum, h) => sum + (h.scores?.[p.user_id] || 0), 0);
+                    return (
+                      <tr key={p.user_id} className={p.user_id === user.id ? 'font-semibold' : ''}>
+                        <td className="text-left py-1">
+                          {p.username}{p.user_id === user.id ? ' (vous)' : ''}
+                        </td>
+                        <td className="text-center py-1">{wins}</td>
+                        <td className="text-right py-1">{total} pts</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Notification bot */}
         {botRevealMessage && (
