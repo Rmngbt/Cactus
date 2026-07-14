@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { ArrowLeft, Eye, Trash2, ArrowRightLeft } from 'lucide-react';
 import GameCard from '@/components/GameCard';
+import { createDeck, shuffle } from '@/lib/deck';
 
 const CARD_VALUES = {
   'K': 0, 'A': 1, '2': -2, '3': 3, '4': 4, '5': 5,
@@ -49,6 +50,7 @@ export default function GameBoard({ user, onLogout }) {
   const gameStateRef = useRef(null);
   const statsUpdatedRef = useRef(false);
   const roomRef = useRef(null);
+  const botBusyRef = useRef(false);
 
   useEffect(() => {
     fetchRoom();
@@ -71,6 +73,19 @@ export default function GameBoard({ user, onLogout }) {
   useEffect(() => {
     roomRef.current = room;
   }, [room]);
+
+  // Le tour du bot est piloté par l'état de la partie : il se relance
+  // aussi après un rechargement de page (et pas seulement après une
+  // action humaine).
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'playing') return;
+    const current = gameState.players[gameState.current_player_index];
+    if (!current?.is_bot || botBusyRef.current) return;
+    botBusyRef.current = true;
+    executeBotTurn(gameState).finally(() => {
+      botBusyRef.current = false;
+    });
+  }, [gameState]);
 
   const addBotLog = (message) => {
     setBotActionLog(prev => [...prev.slice(-4), `🤖 ${message}`]);
@@ -111,13 +126,22 @@ export default function GameBoard({ user, onLogout }) {
 
   const updateStats = async (gs) => {
     try {
+      // Garde anti-double comptage : recharger la page de fin de partie
+      // ne doit pas ré-incrémenter les stats.
+      const storageKey = `cactus_stats_recorded_${code.toUpperCase()}`;
+      if (localStorage.getItem(storageKey)) return;
+
       const myPlayer = gs.players.find(p => p.user_id === user.id);
       if (!myPlayer) return;
 
-      const myScore = myPlayer.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0;
-      const humanPlayers = gs.players.filter(p => !p.is_bot);
-      const scores = humanPlayers.map(p => p.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0);
-      const isWinner = myScore === Math.min(...scores);
+      // Le vainqueur est comparé à TOUS les joueurs, bot inclus.
+      const totals = gs.players.map(p => p.total_score || 0);
+      const myTotal = myPlayer.total_score || 0;
+      const isWinner = myTotal === Math.min(...totals);
+      const myPerfects = (gs.perfect_cactus_players || [])
+        .filter(id => id === user.id).length;
+
+      localStorage.setItem(storageKey, '1');
 
       const { data: currentStats } = await supabase
         .from('stats')
@@ -131,7 +155,8 @@ export default function GameBoard({ user, onLogout }) {
           .update({
             games_played: (currentStats.games_played || 0) + 1,
             wins: (currentStats.wins || 0) + (isWinner ? 1 : 0),
-            total_score: (currentStats.total_score || 0) + myScore,
+            total_score: (currentStats.total_score || 0) + myTotal,
+            perfect_cactus_count: (currentStats.perfect_cactus_count || 0) + myPerfects,
           })
           .eq('user_id', user.id);
       } else {
@@ -141,8 +166,8 @@ export default function GameBoard({ user, onLogout }) {
             user_id: user.id,
             games_played: 1,
             wins: isWinner ? 1 : 0,
-            total_score: myScore,
-            perfect_cactus_count: 0
+            total_score: myTotal,
+            perfect_cactus_count: myPerfects
           });
       }
 
@@ -177,14 +202,67 @@ export default function GameBoard({ user, onLogout }) {
     if (newGs.cactus_called && newGs.remaining_final_turns > 0) {
       newGs.remaining_final_turns -= 1;
       if (newGs.remaining_final_turns <= 0) {
-        newGs.phase = 'ended';
-        newGs.players = newGs.players.map(p => ({
-          ...p,
-          round_score: p.hand ? p.hand.reduce((sum, card) => sum + getCardValue(card), 0) : 0
-        }));
+        return endRound(newGs);
       }
     }
     return newGs;
+  };
+
+  // Clôture une manche : calcule les scores, les cumule, puis décide si la
+  // partie continue (num_rounds / score_threshold de la config) ou s'arrête.
+  const endRound = (gs) => {
+    const newGs = { ...gs };
+    newGs.players = newGs.players.map(p => {
+      const roundScore = calculateScore(p.hand);
+      return {
+        ...p,
+        round_score: roundScore,
+        total_score: (p.total_score || 0) + roundScore
+      };
+    });
+
+    const config = roomRef.current?.config || {};
+    const numRounds = config.num_rounds || 1;
+    const threshold = config.score_threshold || 60;
+    const gameOver = newGs.round >= numRounds ||
+      newGs.players.some(p => (p.total_score || 0) >= threshold);
+
+    newGs.phase = gameOver ? 'ended' : 'round_ended';
+    newGs.drawn_card = null;
+    return newGs;
+  };
+
+  const handleNextRound = async () => {
+    const config = roomRef.current?.config || {};
+    const cardsPerPlayer = config.cards_per_player || 4;
+    const deck = createDeck();
+
+    const players = gameState.players.map(p => ({
+      ...p,
+      hand: deck.splice(0, cardsPerPlayer),
+      revealed_cards: p.is_bot
+        ? Array.from({ length: cardsPerPlayer }, (_, i) => i)
+        : [],
+      round_score: 0
+    }));
+
+    const newGs = {
+      deck,
+      discard_pile: [deck.splice(0, 1)[0]],
+      players,
+      current_player_index: 0,
+      round: gameState.round + 1,
+      phase: 'initial_reveal',
+      cards_to_reveal: config.visible_at_start || 2,
+      drawn_card: null,
+      cactus_called: false,
+      cactus_caller: null,
+      cactus_caller_username: null,
+      remaining_final_turns: 0,
+      perfect_cactus_players: gameState.perfect_cactus_players || []
+    };
+
+    await updateGameState(newGs);
   };
 
   // ============================================================
@@ -209,32 +287,19 @@ export default function GameBoard({ user, onLogout }) {
       if (topDiscard && topDiscard.value) {
         const slamIdx = bot.hand.findIndex(c => c && c.value === topDiscard.value);
         if (slamIdx !== -1) {
-          addBotLog(`Slam ! Défausse un ${bot.hand[slamIdx].value}`);
-          newGs.players[botIdx].hand.splice(slamIdx, 1);
-          newGs.discard_pile.push(topDiscard);
+          const slammedCard = newGs.players[botIdx].hand.splice(slamIdx, 1)[0];
+          addBotLog(`Slam ! Défausse un ${slammedCard.value}`);
+          newGs.discard_pile.push(slammedCard);
 
           if (newGs.players[botIdx].hand.length === 0) {
             addBotLog('Perfect Cactus !');
-            newGs.phase = 'ended';
             newGs.cactus_called = true;
             newGs.cactus_caller = 'bot';
-            await supabase.from('game_rooms').update({ game_state: newGs }).eq('code', code.toUpperCase());
-            setGameState(newGs);
+            newGs.perfect_cactus_players = [...(newGs.perfect_cactus_players || []), 'bot'];
+            const finished = endRound(newGs);
+            await supabase.from('game_rooms').update({ game_state: finished }).eq('code', code.toUpperCase());
+            setGameState(finished);
             return;
-          }
-
-          // Donner la carte la plus haute au joueur humain
-          if (newGs.players[botIdx].hand.length > 0) {
-            const highestIdx = newGs.players[botIdx].hand.reduce((maxIdx, card, idx, arr) => {
-              if (!card) return maxIdx;
-              return getCardValue(card) > getCardValue(arr[maxIdx]) ? idx : maxIdx;
-            }, 0);
-            const cardToGive = newGs.players[botIdx].hand.splice(highestIdx, 1)[0];
-            const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-            if (humanIdx !== -1 && cardToGive) {
-              newGs.players[humanIdx].hand.push(cardToGive);
-              addBotLog(`Donne un ${cardToGive.value} au joueur`);
-            }
           }
 
           const updated = advanceTurn(newGs);
@@ -246,8 +311,9 @@ export default function GameBoard({ user, onLogout }) {
 
       // 2. CACTUS — appeler si score bas selon difficulté
       const currentRoom = roomRef.current;
+      // Plus le bot est fort, plus il attend un score bas avant d'appeler Cactus.
       const difficulty = currentRoom?.config?.bot_difficulty || 'medium';
-      const cactusThreshold = difficulty === 'easy' ? 5 : difficulty === 'medium' ? 12 : 18;
+      const cactusThreshold = difficulty === 'easy' ? 18 : difficulty === 'medium' ? 12 : 6;
 
       if (botScore <= cactusThreshold && !newGs.cactus_called) {
         addBotLog(`Appelle Cactus ! (score: ${botScore})`);
@@ -266,7 +332,7 @@ export default function GameBoard({ user, onLogout }) {
       if (!newGs.deck || newGs.deck.length === 0) {
         if (newGs.discard_pile && newGs.discard_pile.length > 1) {
           const top = newGs.discard_pile.pop();
-          newGs.deck = newGs.discard_pile.filter(c => c).sort(() => Math.random() - 0.5);
+          newGs.deck = shuffle(newGs.discard_pile.filter(c => c));
           newGs.discard_pile = [top];
           addBotLog('Recycle le deck');
         } else {
@@ -360,19 +426,15 @@ export default function GameBoard({ user, onLogout }) {
               return getCardValue(card) > getCardValue(arr[maxIdx] || { value: '2' }) ? idx : maxIdx;
             }, 0);
 
-            const humanLowestIdx = newGs.players[humanIdx].hand.reduce((minIdx, card, idx, arr) => {
-              if (!card) return minIdx;
-              const minCard = arr[minIdx];
-              if (!minCard) return idx;
-              return getCardValue(card) < getCardValue(minCard) ? idx : minIdx;
-            }, 0);
+            // Le bot ne connaît pas les cartes de l'adversaire : il en prend une au hasard
+            const humanTargetIdx = Math.floor(Math.random() * newGs.players[humanIdx].hand.length);
 
             const botCard = newGs.players[botIdx].hand[botHighestIdx];
-            const humanCard = newGs.players[humanIdx].hand[humanLowestIdx];
+            const humanCard = newGs.players[humanIdx].hand[humanTargetIdx];
 
             if (botCard && humanCard) {
               newGs.players[botIdx].hand[botHighestIdx] = humanCard;
-              newGs.players[humanIdx].hand[humanLowestIdx] = botCard;
+              newGs.players[humanIdx].hand[humanTargetIdx] = botCard;
               addBotLog(`Échange son ${botCard.value} contre votre ${humanCard.value}`);
               toast.info(`🤖 Le bot a échangé son ${botCard.value} contre votre ${humanCard.value}!`);
             }
@@ -443,7 +505,7 @@ export default function GameBoard({ user, onLogout }) {
     if (!newGs.deck || newGs.deck.length === 0) {
       if (newGs.discard_pile && newGs.discard_pile.length > 1) {
         const top = newGs.discard_pile.pop();
-        newGs.deck = newGs.discard_pile.sort(() => Math.random() - 0.5);
+        newGs.deck = shuffle(newGs.discard_pile);
         newGs.discard_pile = [top];
       } else {
         toast.error('Plus de cartes disponibles');
@@ -483,9 +545,6 @@ export default function GameBoard({ user, onLogout }) {
     } else {
       const updated = advanceTurn(newGs);
       await updateGameState(updated);
-      if (updated.players[updated.current_player_index]?.is_bot) {
-        executeBotTurn(updated);
-      }
     }
   };
 
@@ -505,9 +564,6 @@ export default function GameBoard({ user, onLogout }) {
     } else {
       const updated = advanceTurn(newGs);
       await updateGameState(updated);
-      if (updated.players[updated.current_player_index]?.is_bot) {
-        executeBotTurn(updated);
-      }
     }
   };
 
@@ -524,7 +580,10 @@ export default function GameBoard({ user, onLogout }) {
         newGs.players[targetIdx].hand.splice(targetCardIndex, 1);
         newGs.discard_pile.push(card);
         if (newGs.players[targetIdx].hand.length === 0) {
-          newGs.phase = 'ended';
+          const finished = endRound(newGs);
+          await updateGameState(finished);
+          toast.success('Slam réussi!');
+          return;
         }
         newGs.pending_give_card = { from_player: user.id, to_player: targetPlayer };
         toast.success('Slam réussi!');
@@ -540,9 +599,14 @@ export default function GameBoard({ user, onLogout }) {
         newGs.players[myPlayerIdx].hand.splice(cardIndex, 1);
         newGs.discard_pile.push(card);
         if (newGs.players[myPlayerIdx].hand.length === 0) {
+          // Perfect Cactus : main vidée par défausse rapide
           newGs.cactus_called = true;
           newGs.cactus_caller = user.id;
-          newGs.phase = 'ended';
+          newGs.perfect_cactus_players = [...(newGs.perfect_cactus_players || []), user.id];
+          const finished = endRound(newGs);
+          await updateGameState(finished);
+          toast.success('Perfect Cactus! 🌵⭐');
+          return;
         }
         toast.success('Slam réussi!');
       } else {
@@ -562,13 +626,13 @@ export default function GameBoard({ user, onLogout }) {
     newGs.cactus_caller = user.id;
     newGs.cactus_caller_username = myPlayer.username;
     newGs.remaining_final_turns = newGs.players.length - 1;
+    if (newGs.drawn_card) {
+      newGs.discard_pile.push(newGs.drawn_card);
+    }
     newGs.drawn_card = null;
     newGs.current_player_index = (newGs.current_player_index + 1) % newGs.players.length;
 
     await updateGameState(newGs);
-    if (newGs.players[newGs.current_player_index]?.is_bot) {
-      executeBotTurn(newGs);
-    }
   };
 
   const handleSpecialLookOwn = async (cardIndex) => {
@@ -644,10 +708,6 @@ export default function GameBoard({ user, onLogout }) {
     const updated = advanceTurn(newGs);
     await updateGameState(updated);
     setSwapMyCard(null);
-
-    if (updated.players[updated.current_player_index]?.is_bot) {
-      executeBotTurn(updated);
-    }
   };
 
   const handleClearSpecial = async () => {
@@ -663,10 +723,6 @@ export default function GameBoard({ user, onLogout }) {
     const updated = advanceTurn(newGs);
     await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
     setGameState(updated);
-
-    if (updated.players[updated.current_player_index]?.is_bot) {
-      executeBotTurn(updated);
-    }
   };
 
   const handleSkipSpecial = async () => {
@@ -1018,24 +1074,50 @@ export default function GameBoard({ user, onLogout }) {
             </div>
           )}
 
+          {/* Fin de manche (la partie continue) */}
+          {gameState.phase === 'round_ended' && (
+            <div className="bg-orange-400 text-black p-4 rounded-lg text-center space-y-3">
+              <div className="text-2xl font-bold">
+                Fin de la manche {gameState.round}/{room?.config?.num_rounds || 1}
+              </div>
+              <div className="space-y-2">
+                {[...gameState.players]
+                  .sort((a, b) => (a.total_score || 0) - (b.total_score || 0))
+                  .map((player) => (
+                    <div key={player.user_id} className="flex justify-between p-2 rounded bg-white/50">
+                      <span>{player.username}</span>
+                      <span>
+                        +{player.round_score || 0} pts (total : {player.total_score || 0})
+                      </span>
+                    </div>
+                  ))}
+              </div>
+              {room?.creator_id === user.id ? (
+                <Button onClick={handleNextRound} className="desert-button mt-2 bg-accent hover:bg-accent/90">
+                  Manche suivante ➜
+                </Button>
+              ) : (
+                <div className="text-sm font-semibold">
+                  En attente que le créateur lance la manche suivante...
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Fin de partie */}
           {gameState.phase === 'ended' && (
             <div className="bg-yellow-500 text-black p-4 rounded-lg text-center space-y-3">
               <div className="text-2xl font-bold">🏆 Partie Terminée!</div>
               <div className="space-y-2">
-                {gameState.players
-                  .map(p => ({
-                    ...p,
-                    score: p.hand?.reduce((sum, card) => sum + getCardValue(card), 0) || 0
-                  }))
-                  .sort((a, b) => a.score - b.score)
+                {[...gameState.players]
+                  .sort((a, b) => (a.total_score || 0) - (b.total_score || 0))
                   .map((player, idx) => (
                     <div
                       key={player.user_id}
                       className={`flex justify-between p-2 rounded ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}
                     >
                       <span>{idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}</span>
-                      <span>{player.score} points</span>
+                      <span>{player.total_score || 0} points</span>
                     </div>
                   ))}
               </div>

@@ -44,10 +44,12 @@ export default function Register({ onLogin }) {
         return;
       }
 
-      // Créer le compte auth
+      // Créer le compte auth — le profil et les stats sont créés
+      // automatiquement côté serveur (trigger SQL handle_new_user)
       const { data, error } = await supabase.auth.signUp({
         email,
-        password
+        password,
+        options: { data: { username } }
       });
 
       if (error) {
@@ -62,25 +64,13 @@ export default function Register({ onLogin }) {
         return;
       }
 
-      // Créer le profil
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert({
-          id: data.user.id,
-          username,
-          is_admin: false
-        });
-
-      if (profileError) {
-        toast.error('Erreur lors de la création du profil');
-        setLoading(false);
+      if (!data.session) {
+        // Confirmation d'email activée : pas de session tant que
+        // l'utilisateur n'a pas cliqué le lien reçu par email
+        toast.success('Compte créé! Vérifiez votre email pour confirmer votre inscription.');
+        navigate('/login');
         return;
       }
-
-      // Créer les stats
-      await supabase
-        .from('stats')
-        .insert({ user_id: data.user.id });
 
       const profile = { id: data.user.id, username, is_admin: false };
       onLogin(profile);

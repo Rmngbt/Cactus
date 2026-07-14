@@ -1,0 +1,31 @@
+# Empêche Supabase (plan gratuit) de mettre le projet en pause :
+# une requête est envoyée à la base 2 fois par semaine.
+#
+# Prérequis — ajouter 2 secrets dans GitHub :
+#   Repo → Settings → Secrets and variables → Actions → New repository secret
+#     SUPABASE_URL      = https://xxxx.supabase.co
+#     SUPABASE_ANON_KEY = la clé anon du projet
+#
+# NB : GitHub désactive les workflows planifiés après 60 jours sans
+# activité sur le repo — un simple commit (ou le bouton "Enable" dans
+# l'onglet Actions) les relance.
+
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: '0 8 * * 1,4' # lundi et jeudi à 8h UTC
+  workflow_dispatch: # permet aussi de le lancer à la main
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping de la base Supabase
+        run: |
+          curl --silent --fail --show-error \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/profiles?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            --output /dev/null
+          echo "✅ Supabase est actif"

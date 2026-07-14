@@ -54,9 +54,7 @@ export default function AdminPanel({ user, onLogout }) {
   const handleToggleAdmin = async (userId, currentStatus) => {
     try {
       const { error } = await supabase
-        .from('profiles')
-        .update({ is_admin: !currentStatus })
-        .eq('id', userId);
+        .rpc('set_admin', { target_user: userId, make_admin: !currentStatus });
 
       if (error) throw error;
       toast.success(`Droits admin ${!currentStatus ? 'accordés' : 'retirés'}`);
