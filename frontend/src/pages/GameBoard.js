@@ -549,14 +549,16 @@ export default function GameBoard({ user, onLogout }) {
       }
 
     } else if (value === '10') {
-      // Regarder une carte du joueur humain (au hasard) — notifier !
+      // Regarder une carte du joueur humain (au hasard) — on notifie la
+      // POSITION regardée, mais jamais la valeur (le joueur ne l'a
+      // peut-être pas vue lui-même !)
       const humanIdx = newGs.players.findIndex(p => !p.is_bot);
       if (humanIdx !== -1 && newGs.players[humanIdx].hand.length > 0) {
         const targetCardIdx = Math.floor(Math.random() * newGs.players[humanIdx].hand.length);
         const peekedCard = newGs.players[humanIdx].hand[targetCardIdx];
         if (peekedCard) {
-          addBotLog(`Regarde votre carte ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
-          setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
+          addBotLog(`Regarde votre carte ${targetCardIdx + 1}`);
+          setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1}`);
           setTimeout(() => setBotRevealMessage(null), 4000);
         }
       }
@@ -679,12 +681,14 @@ export default function GameBoard({ user, onLogout }) {
       const worstKnownValue = worstKnownIdx !== -1 ? getCardValue(bot.hand[worstKnownIdx]) : null;
 
       let drawnCard = null;
+      let drawnFromDiscard = false;
       const discardValue = topDiscard ? getCardValue(topDiscard) : 999;
 
       if (!justSlammed && topDiscard && worstKnownValue !== null &&
           discardValue < worstKnownValue && newGs.discard_pile.length > 0) {
         drawnCard = newGs.discard_pile.pop();
-        addBotLog(`Prend la défausse : ${drawnCard?.value}`);
+        drawnFromDiscard = true;
+        addBotLog(`Prend le ${drawnCard?.value} de la défausse`);
       } else if (newGs.deck && newGs.deck.length > 0) {
         drawnCard = newGs.deck.pop();
         addBotLog(`Pioche une carte`);
@@ -701,12 +705,16 @@ export default function GameBoard({ user, onLogout }) {
 
       if (worstKnownIdx !== -1 && drawnValue < worstKnownValue) {
         // Remplacer sa pire carte CONNUE (le bot voit la carte qu'il pose : il la mémorise)
+        // Journal : seule la carte défaussée (face visible) est annoncée —
+        // la valeur d'une carte piochée au talon reste secrète
         discardedCard = bot.hand[worstKnownIdx];
         bot.hand[worstKnownIdx] = drawnCard;
         rememberCardAt(bot, worstKnownIdx);
         newGs.discard_pile.push(discardedCard);
         newGs.drawn_card = null;
-        addBotLog(`Échange ${discardedCard?.value} contre ${drawnCard.value}`);
+        addBotLog(drawnFromDiscard
+          ? `Échange son ${discardedCard?.value} contre le ${drawnCard.value}`
+          : `Garde sa pioche et défausse un ${discardedCard?.value}`);
       } else {
         const unknownIdxs = bot.hand
           .map((c, i) => i)
@@ -721,7 +729,7 @@ export default function GameBoard({ user, onLogout }) {
           rememberCardAt(bot, targetIdx);
           newGs.discard_pile.push(discardedCard);
           newGs.drawn_card = null;
-          addBotLog(`Remplace une carte inconnue par ${drawnCard.value}`);
+          addBotLog(`Garde sa pioche à la place d'une carte inconnue, défausse un ${discardedCard?.value}`);
         } else {
           // Défausser la carte piochée
           discardedCard = drawnCard;
