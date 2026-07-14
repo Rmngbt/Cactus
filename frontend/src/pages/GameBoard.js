@@ -119,6 +119,9 @@ export default function GameBoard({ user, onLogout }) {
   // action humaine).
   useEffect(() => {
     if (!gameState || gameState.phase !== 'playing') return;
+    // Le jeu est « en pause » tant qu'une action spéciale ou un don de
+    // carte est en cours de résolution : le bot attend la reprise.
+    if (gameState.awaiting_special_action || gameState.pending_give_card || gameState.special_reveal) return;
     const current = gameState.players[gameState.current_player_index];
     if (!current?.is_bot || botBusyRef.current) return;
     botBusyRef.current = true;
@@ -183,6 +186,11 @@ export default function GameBoard({ user, onLogout }) {
     newGs.discard_pile.push(slammedCard);
     addBotLog(`Slam ! Défausse un ${slammedCard.value}`);
     toast.info(`🤖 Le bot slamme un ${slammedCard.value}!`);
+
+    // Une carte spéciale slammée déclenche son pouvoir
+    if (newGs.players[botIdx].hand.length > 0 && isSpecialCard(slammedCard)) {
+      applyBotSpecialEffect(newGs, botIdx, slammedCard.value);
+    }
 
     if (newGs.players[botIdx].hand.length === 0) {
       addBotLog('Perfect Cactus !');
@@ -453,6 +461,63 @@ export default function GameBoard({ user, onLogout }) {
   // ============================================================
   // BOT LOGIC COMPLET ET CORRIGÉ
   // ============================================================
+
+  // Applique le pouvoir d'une carte spéciale jouée par le bot
+  // (défausse normale OU slam) — mutation directe de newGs.
+  const applyBotSpecialEffect = (newGs, botIdx, value) => {
+    const bot = newGs.players[botIdx];
+
+    if (value === '8') {
+      // Regarder une de ses cartes inconnues (elle rejoint sa mémoire)
+      const unknownIdx = bot.hand.findIndex((c, i) =>
+        c && !knownIndexes(bot).includes(i));
+      if (unknownIdx !== -1) {
+        rememberCardAt(bot, unknownIdx);
+        addBotLog(`Regarde sa carte ${unknownIdx + 1}`);
+      }
+
+    } else if (value === '10') {
+      // Regarder une carte du joueur humain (au hasard) — notifier !
+      const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+      if (humanIdx !== -1 && newGs.players[humanIdx].hand.length > 0) {
+        const targetCardIdx = Math.floor(Math.random() * newGs.players[humanIdx].hand.length);
+        const peekedCard = newGs.players[humanIdx].hand[targetCardIdx];
+        if (peekedCard) {
+          addBotLog(`Regarde votre carte ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
+          setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
+          setTimeout(() => setBotRevealMessage(null), 4000);
+        }
+      }
+
+    } else if (value === 'J') {
+      // Échanger sa pire carte CONNUE contre une carte adverse au hasard
+      const humanIdx = newGs.players.findIndex(p => !p.is_bot);
+      if (humanIdx !== -1 &&
+          bot.hand.length > 0 &&
+          newGs.players[humanIdx].hand.length > 0) {
+
+        const knownNow = knownIndexes(bot);
+        const botGiveIdx = knownNow.length > 0
+          ? knownNow.reduce((a, b) => getCardValue(bot.hand[a]) >= getCardValue(bot.hand[b]) ? a : b)
+          : Math.floor(Math.random() * bot.hand.length);
+
+        const humanTargetIdx = Math.floor(Math.random() * newGs.players[humanIdx].hand.length);
+
+        const botCard = bot.hand[botGiveIdx];
+        const humanCard = newGs.players[humanIdx].hand[humanTargetIdx];
+
+        if (botCard && humanCard) {
+          bot.hand[botGiveIdx] = humanCard;
+          newGs.players[humanIdx].hand[humanTargetIdx] = botCard;
+          // La carte reçue est inconnue : le bot l'oublie de sa mémoire
+          forgetCardAt(bot, botGiveIdx);
+          addBotLog(`Échange sa carte ${botGiveIdx + 1} contre votre carte ${humanTargetIdx + 1}`);
+          toast.info(`🤖 Le bot a échangé une de ses cartes contre votre carte ${humanTargetIdx + 1}!`);
+        }
+      }
+    }
+  };
+
   const executeBotTurn = async (currentGs) => {
     try {
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -487,6 +552,11 @@ export default function GameBoard({ user, onLogout }) {
             const finished = endRound(newGs);
             await updateGameState(finished);
             return;
+          }
+
+          // Une carte spéciale slammée déclenche son pouvoir
+          if (isSpecialCard(slammedCard)) {
+            applyBotSpecialEffect(newGs, botIdx, slammedCard.value);
           }
           // pas de return : le tour du bot continue après le slam
         }
@@ -592,58 +662,7 @@ export default function GameBoard({ user, onLogout }) {
       // 6. CARTES SPÉCIALES
       if (discardedCard && isSpecialCard(discardedCard)) {
         await new Promise(resolve => setTimeout(resolve, 800));
-
-        if (discardedCard.value === '8') {
-          // Regarder une de ses cartes inconnues (elle rejoint sa mémoire)
-          const unknownIdx = bot.hand.findIndex((c, i) =>
-            c && !knownIndexes(bot).includes(i));
-          if (unknownIdx !== -1) {
-            rememberCardAt(bot, unknownIdx);
-            addBotLog(`Regarde sa carte ${unknownIdx + 1}`);
-          }
-
-        } else if (discardedCard.value === '10') {
-          // Regarder la carte du joueur humain — notifier !
-          const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-          if (humanIdx !== -1 && newGs.players[humanIdx].hand.length > 0) {
-            // Le bot regarde la carte avec la plus haute valeur estimée
-            const targetCardIdx = 0;
-            const peekedCard = newGs.players[humanIdx].hand[targetCardIdx];
-            if (peekedCard) {
-              addBotLog(`Regarde votre carte ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
-              setBotRevealMessage(`🤖 Le bot a regardé votre carte en position ${targetCardIdx + 1} : ${peekedCard.value}${getSuitSymbol(peekedCard.suit)}`);
-              setTimeout(() => setBotRevealMessage(null), 4000);
-            }
-          }
-
-        } else if (discardedCard.value === 'J') {
-          // Échanger sa pire carte CONNUE contre une carte adverse au hasard
-          const humanIdx = newGs.players.findIndex(p => !p.is_bot);
-          if (humanIdx !== -1 &&
-              bot.hand.length > 0 &&
-              newGs.players[humanIdx].hand.length > 0) {
-
-            const knownNow = knownIndexes(bot);
-            const botGiveIdx = knownNow.length > 0
-              ? knownNow.reduce((a, b) => getCardValue(bot.hand[a]) >= getCardValue(bot.hand[b]) ? a : b)
-              : Math.floor(Math.random() * bot.hand.length);
-
-            // Il ne connaît pas les cartes de l'adversaire : il en prend une au hasard
-            const humanTargetIdx = Math.floor(Math.random() * newGs.players[humanIdx].hand.length);
-
-            const botCard = bot.hand[botGiveIdx];
-            const humanCard = newGs.players[humanIdx].hand[humanTargetIdx];
-
-            if (botCard && humanCard) {
-              bot.hand[botGiveIdx] = humanCard;
-              newGs.players[humanIdx].hand[humanTargetIdx] = botCard;
-              // La carte reçue est inconnue : le bot l'oublie de sa mémoire
-              forgetCardAt(bot, botGiveIdx);
-              addBotLog(`Échange sa carte ${botGiveIdx + 1} contre votre carte ${humanTargetIdx + 1}`);
-              toast.info(`🤖 Le bot a échangé une de ses cartes contre votre carte ${humanTargetIdx + 1}!`);
-            }
-          }
-        }
+        applyBotSpecialEffect(newGs, botIdx, discardedCard.value);
       }
 
       const updated = advanceTurn(newGs);
@@ -802,7 +821,13 @@ export default function GameBoard({ user, onLogout }) {
             return endRound(gs);
           }
           gs.pending_give_card = { from_player: user.id, to_player: targetPlayer };
-          result = 'slam';
+          // Carte spéciale slammée : le pouvoir s'activera après le don
+          if (isSpecialCard(card)) {
+            gs.pending_special_after_give = { player: user.id, type: card.value };
+            result = 'slam_special';
+          } else {
+            result = 'slam';
+          }
         } else {
           if (gs.deck && gs.deck.length > 0) {
             gs.players[myPlayerIdx].hand.push(gs.deck.pop());
@@ -822,7 +847,18 @@ export default function GameBoard({ user, onLogout }) {
             result = 'perfect';
             return endRound(gs);
           }
-          result = 'slam';
+          // Carte spéciale slammée : le pouvoir se déclenche (hors tour,
+          // le jeu se met en pause le temps de la résolution)
+          if (isSpecialCard(card)) {
+            gs.special_card_available = true;
+            gs.special_card_player = user.id;
+            gs.special_card_type = card.value;
+            gs.awaiting_special_action = true;
+            gs.special_from_slam = true;
+            result = 'slam_special';
+          } else {
+            result = 'slam';
+          }
         } else {
           if (gs.deck && gs.deck.length > 0) {
             gs.players[myPlayerIdx].hand.push(gs.deck.pop());
@@ -834,6 +870,7 @@ export default function GameBoard({ user, onLogout }) {
     });
 
     if (result === 'perfect') toast.success('Perfect Cactus! 🌵⭐');
+    else if (result === 'slam_special') toast.success('Slam réussi! Pouvoir de la carte activé ✨');
     else if (result === 'slam') toast.success('Slam réussi!');
     else if (result === 'missed') toast.error('Slam raté! +1 carte');
   };
@@ -855,6 +892,8 @@ export default function GameBoard({ user, onLogout }) {
   };
 
   const handleSpecialLookOwn = async (cardIndex) => {
+    // Une seule carte par pouvoir : rien tant qu'une révélation est en cours
+    if (gameState.special_reveal) return;
     const newGs = JSON.parse(JSON.stringify(gameState));
     const myPlayerIdx = newGs.players.findIndex(p => p.user_id === user.id);
     const card = newGs.players[myPlayerIdx].hand[cardIndex];
@@ -882,6 +921,8 @@ export default function GameBoard({ user, onLogout }) {
   };
 
   const handleSpecialLookOpponent = async (targetPlayer, cardIndex) => {
+    // Une seule carte par pouvoir : rien tant qu'une révélation est en cours
+    if (gameState.special_reveal) return;
     const newGs = JSON.parse(JSON.stringify(gameState));
     const targetIdx = newGs.players.findIndex(p => p.user_id === targetPlayer);
     const card = newGs.players[targetIdx].hand[cardIndex];
@@ -921,12 +962,16 @@ export default function GameBoard({ user, onLogout }) {
     // L'adversaire reçoit une carte qu'il n'a pas vue : elle sort de sa mémoire
     forgetCardAt(newGs.players[targetIdx], targetCardIndex);
 
+    // Un pouvoir issu d'un slam (hors tour) ne fait pas avancer le tour :
+    // le jeu reprend simplement là où il en était.
+    const fromSlamSwap = newGs.special_from_slam;
     newGs.special_card_available = false;
     newGs.special_card_player = null;
     newGs.special_card_type = null;
     newGs.awaiting_special_action = false;
+    newGs.special_from_slam = null;
 
-    const updated = advanceTurn(newGs);
+    const updated = fromSlamSwap ? newGs : advanceTurn(newGs);
     await updateGameState(updated);
     setSwapMyCard(null);
   };
@@ -935,13 +980,15 @@ export default function GameBoard({ user, onLogout }) {
     const gs = gameStateRef.current;
     if (!gs) return;
     const newGs = JSON.parse(JSON.stringify(gs));
+    const fromSlam = newGs.special_from_slam;
     newGs.special_reveal = null;
     newGs.special_card_available = false;
     newGs.special_card_player = null;
     newGs.special_card_type = null;
     newGs.awaiting_special_action = false;
+    newGs.special_from_slam = null;
 
-    const updated = advanceTurn(newGs);
+    const updated = fromSlam ? newGs : advanceTurn(newGs);
     await updateGameState(updated);
   };
 
@@ -949,6 +996,19 @@ export default function GameBoard({ user, onLogout }) {
     if (countdownRef.current) clearInterval(countdownRef.current);
     setRevealCountdown(0);
     await handleClearSpecial();
+  };
+
+  // Après le don (ou son refus), le pouvoir d'une carte spéciale slammée
+  // en attente devient actif pour le slammeur.
+  const activatePendingSpecial = (gs) => {
+    if (gs.pending_special_after_give?.player === user.id) {
+      gs.special_card_available = true;
+      gs.special_card_player = user.id;
+      gs.special_card_type = gs.pending_special_after_give.type;
+      gs.awaiting_special_action = true;
+      gs.special_from_slam = true;
+      gs.pending_special_after_give = null;
+    }
   };
 
   const handleGiveCard = async (cardIndex) => {
@@ -964,6 +1024,16 @@ export default function GameBoard({ user, onLogout }) {
       // La carte reçue est inconnue du destinataire : pas d'ajout à sa mémoire
       gs.players[targetIdx].hand.push(card);
       gs.pending_give_card = null;
+      activatePendingSpecial(gs);
+      return gs;
+    });
+  };
+
+  const handleSkipGive = async () => {
+    await mutateGameState((gs) => {
+      if (!gs.pending_give_card || gs.pending_give_card.from_player !== user.id) return null;
+      gs.pending_give_card = null;
+      activatePendingSpecial(gs);
       return gs;
     });
   };
@@ -1108,7 +1178,7 @@ export default function GameBoard({ user, onLogout }) {
                                 <Trash2 className="h-3 w-3" />
                               </button>
                             )}
-                            {specialAvailable && gameState.special_card_type === '10' && (
+                            {specialAvailable && gameState.special_card_type === '10' && !gameState.special_reveal && (
                               <button
                                 className="absolute -top-1 -right-1 h-6 w-6 bg-purple-500 text-white rounded-full opacity-0 group-hover:opacity-100 flex items-center justify-center"
                                 onClick={() => handleSpecialLookOpponent(player.user_id, cardIdx)}
@@ -1220,7 +1290,7 @@ export default function GameBoard({ user, onLogout }) {
                             🎁
                           </button>
                         )}
-                        {specialAvailable && gameState.special_card_type === '8' && (
+                        {specialAvailable && gameState.special_card_type === '8' && !gameState.special_reveal && (
                           <button
                             className="h-7 w-7 rounded-full shadow-lg bg-purple-500 text-white flex items-center justify-center"
                             onClick={() => handleSpecialLookOwn(cardIdx)}
@@ -1271,7 +1341,7 @@ export default function GameBoard({ user, onLogout }) {
             <div className="bg-green-600 text-white p-4 rounded-lg text-center space-y-3">
               <div className="font-semibold">🎉 Slam réussi! Donnez une carte à l'adversaire.</div>
               <Button
-                onClick={() => { const newGs = { ...gameState, pending_give_card: null }; updateGameState(newGs); }}
+                onClick={handleSkipGive}
                 variant="outline" size="sm" className="bg-white text-green-600"
               >
                 Passer
@@ -1309,18 +1379,25 @@ export default function GameBoard({ user, onLogout }) {
                 {[...gameState.players]
                   .sort((a, b) => (a.total_score || 0) - (b.total_score || 0))
                   .map((player) => (
-                    <div key={player.user_id} className="flex justify-between p-2 rounded bg-white/50">
-                      <span>
-                        {player.username}
-                        {player.cactus_penalty && (
-                          <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
-                            Cactus raté +10
-                          </span>
-                        )}
-                      </span>
-                      <span>
-                        +{player.round_score || 0} pts (total : {player.total_score || 0})
-                      </span>
+                    <div key={player.user_id} className="p-2 rounded bg-white/50 space-y-2">
+                      <div className="flex justify-between">
+                        <span>
+                          {player.username}
+                          {player.cactus_penalty && (
+                            <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
+                              Cactus raté +10
+                            </span>
+                          )}
+                        </span>
+                        <span>
+                          +{player.round_score || 0} pts (total : {player.total_score || 0})
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-1">
+                        {player.hand?.map((card, i) => (
+                          <GameCard key={i} card={card} size="sm" />
+                        ))}
+                      </div>
                     </div>
                   ))}
               </div>
@@ -1346,17 +1423,24 @@ export default function GameBoard({ user, onLogout }) {
                   .map((player, idx) => (
                     <div
                       key={player.user_id}
-                      className={`flex justify-between p-2 rounded ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}
+                      className={`p-2 rounded space-y-2 ${idx === 0 ? 'bg-green-200 font-bold' : 'bg-white/50'}`}
                     >
-                      <span>
-                        {idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}
-                        {player.cactus_penalty && (
-                          <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
-                            Cactus raté +10
-                          </span>
-                        )}
-                      </span>
-                      <span>{player.total_score || 0} points</span>
+                      <div className="flex justify-between">
+                        <span>
+                          {idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'} {player.username}
+                          {player.cactus_penalty && (
+                            <span className="ml-2 text-xs bg-red-500 text-white px-2 py-0.5 rounded">
+                              Cactus raté +10
+                            </span>
+                          )}
+                        </span>
+                        <span>{player.total_score || 0} points</span>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-1">
+                        {player.hand?.map((card, i) => (
+                          <GameCard key={i} card={card} size="sm" />
+                        ))}
+                      </div>
                     </div>
                   ))}
               </div>
