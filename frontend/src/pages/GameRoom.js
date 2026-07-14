@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { Copy, Play, Users, ArrowLeft } from 'lucide-react';
+import { createDeck } from '@/lib/deck';
 
 export default function GameRoom({ user, onLogout }) {
   const { code } = useParams();
@@ -254,16 +255,4 @@ export default function GameRoom({ user, onLogout }) {
       </div>
     </div>
   );
-}
-
-function createDeck() {
-  const suits = ['hearts', 'diamonds', 'clubs', 'spades'];
-  const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-  const deck = [];
-  for (const suit of suits) {
-    for (const value of values) {
-      deck.push({ suit, value });
-    }
-  }
-  return deck.sort(() => Math.random() - 0.5);
 }
