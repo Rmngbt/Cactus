@@ -107,6 +107,9 @@ export default function GameBoard({ user, onLogout }) {
     if (gameState?.phase === 'ended' && !statsUpdatedRef.current) {
       statsUpdatedRef.current = true;
       updateStats(gameState);
+    } else if (gameState && gameState.phase !== 'ended') {
+      // Une revanche a démarré : réarmer l'enregistrement des stats
+      statsUpdatedRef.current = false;
     }
   }, [gameState]);
 
@@ -247,7 +250,7 @@ export default function GameBoard({ user, onLogout }) {
     try {
       // Garde anti-double comptage : recharger la page de fin de partie
       // ne doit pas ré-incrémenter les stats.
-      const storageKey = `cactus_stats_recorded_${code.toUpperCase()}`;
+      const storageKey = `cactus_stats_recorded_${code.toUpperCase()}_${gs.game_id || 'g1'}`;
       if (localStorage.getItem(storageKey)) return;
 
       const myPlayer = gs.players.find(p => p.user_id === user.id);
@@ -452,10 +455,61 @@ export default function GameBoard({ user, onLogout }) {
       cactus_caller: null,
       cactus_caller_username: null,
       remaining_final_turns: 0,
-      perfect_cactus_players: gameState.perfect_cactus_players || []
+      perfect_cactus_players: gameState.perfect_cactus_players || [],
+      game_id: gameState.game_id,
+      // Conserver la version pour que le verrou optimiste accepte l'écriture
+      _v: gameState._v
     };
 
     await updateGameState(newGs);
+  };
+
+  // Rejouer une partie complète dans la même salle (même config,
+  // mêmes joueurs, scores remis à zéro).
+  const handleReplay = async () => {
+    const config = roomRef.current?.config || {};
+    const cardsPerPlayer = config.cards_per_player || 4;
+    const deck = createDeck();
+
+    const players = gameState.players.map(p => ({
+      ...p,
+      hand: deck.splice(0, cardsPerPlayer),
+      revealed_cards: p.is_bot
+        ? Array.from({ length: config.visible_at_start || 2 }, (_, i) => i)
+        : [],
+      round_score: 0,
+      total_score: 0,
+      cactus_penalty: false
+    }));
+
+    const newGs = {
+      deck,
+      discard_pile: [deck.splice(0, 1)[0]],
+      players,
+      current_player_index: 0,
+      round: 1,
+      phase: 'initial_reveal',
+      cards_to_reveal: config.visible_at_start || 2,
+      drawn_card: null,
+      cactus_called: false,
+      cactus_caller: null,
+      cactus_caller_username: null,
+      remaining_final_turns: 0,
+      perfect_cactus_players: [],
+      // Identifiant unique de la partie : les stats de la revanche
+      // seront bien comptées (clé anti-double comptage distincte)
+      game_id: `g${Date.now()}`,
+      _v: gameState._v
+    };
+
+    const ok = await updateGameState(newGs);
+    if (ok) {
+      await supabase
+        .from('game_rooms')
+        .update({ state: 'playing' })
+        .eq('code', code.toUpperCase());
+      toast.success('Nouvelle partie!');
+    }
   };
 
   // ============================================================
@@ -1444,9 +1498,16 @@ export default function GameBoard({ user, onLogout }) {
                     </div>
                   ))}
               </div>
-              <Button onClick={() => navigate('/lobby')} className="desert-button mt-4">
-                Retour au lobby
-              </Button>
+              <div className="flex justify-center gap-3 mt-4">
+                {room?.creator_id === user.id && (
+                  <Button onClick={handleReplay} className="desert-button bg-accent hover:bg-accent/90">
+                    🔄 Rejouer
+                  </Button>
+                )}
+                <Button onClick={() => navigate('/lobby')} className="desert-button">
+                  Retour au lobby
+                </Button>
+              </div>
             </div>
           )}
         </div>
