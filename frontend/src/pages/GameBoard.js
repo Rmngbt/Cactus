@@ -292,18 +292,78 @@ export default function GameBoard({ user, onLogout }) {
     }
   };
 
-  const updateGameState = async (newGameState) => {
-    const { error } = await supabase
+  // ============================================================
+  // ÉCRITURES AVEC VERROU OPTIMISTE
+  // Chaque état porte un numéro de version (game_state._v). Une écriture
+  // n'aboutit que si personne n'a écrit depuis l'état dont elle dérive :
+  // deux actions simultanées ne peuvent plus s'écraser mutuellement.
+  // ============================================================
+  const writeGameState = async (nextState, expectedVersion) => {
+    const next = { ...nextState, _v: (expectedVersion || 0) + 1 };
+    let query = supabase
       .from('game_rooms')
-      .update({ game_state: newGameState })
+      .update({ game_state: next })
       .eq('code', code.toUpperCase());
+    query = expectedVersion > 0
+      ? query.eq('game_state->>_v', String(expectedVersion))
+      : query.is('game_state->>_v', null);
 
-    if (error) {
-      toast.error('Erreur de synchronisation');
-      return false;
+    const { data, error } = await query.select('code');
+    if (error || !data || data.length === 0) return null;
+    return next;
+  };
+
+  const applyState = (gs) => {
+    gameStateRef.current = gs;
+    setGameState(gs);
+  };
+
+  // Écriture directe : l'état dérive de la version qu'il transporte (_v).
+  // En cas de conflit, on recharge l'état frais — l'action est abandonnée
+  // et l'utilisateur rejoue si besoin.
+  const updateGameState = async (newGameState) => {
+    const expected = newGameState._v || 0;
+    const written = await writeGameState(newGameState, expected);
+    if (written) {
+      applyState(written);
+      return true;
     }
-    setGameState(newGameState);
-    return true;
+    const { data: freshRoom } = await supabase
+      .from('game_rooms')
+      .select('game_state')
+      .eq('code', code.toUpperCase())
+      .single();
+    if (freshRoom?.game_state) applyState(freshRoom.game_state);
+    return false;
+  };
+
+  // Action concurrente (slam, révélation, don...) : relit l'état frais,
+  // applique la mutation dessus et réessaie en cas de conflit.
+  // Le mutateur revalide ses préconditions et renvoie null pour abandonner.
+  const mutateGameState = async (mutator, retries = 4) => {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      const { data: freshRoom } = await supabase
+        .from('game_rooms')
+        .select('game_state')
+        .eq('code', code.toUpperCase())
+        .single();
+      if (!freshRoom?.game_state) return false;
+
+      const fresh = freshRoom.game_state;
+      const next = mutator(JSON.parse(JSON.stringify(fresh)));
+      if (!next) {
+        applyState(fresh);
+        return false;
+      }
+
+      const written = await writeGameState(next, fresh._v || 0);
+      if (written) {
+        applyState(written);
+        return true;
+      }
+    }
+    toast.error('Trop d\'actions en même temps, réessayez');
+    return false;
   };
 
   const advanceTurn = (gs) => {
@@ -425,8 +485,7 @@ export default function GameBoard({ user, onLogout }) {
             newGs.cactus_caller = 'bot';
             newGs.perfect_cactus_players = [...(newGs.perfect_cactus_players || []), 'bot'];
             const finished = endRound(newGs);
-            await supabase.from('game_rooms').update({ game_state: finished }).eq('code', code.toUpperCase());
-            setGameState(finished);
+            await updateGameState(finished);
             return;
           }
           // pas de return : le tour du bot continue après le slam
@@ -453,8 +512,7 @@ export default function GameBoard({ user, onLogout }) {
         newGs.remaining_final_turns = newGs.players.length - 1;
         newGs.current_player_index = (newGs.current_player_index + 1) % newGs.players.length;
 
-        await supabase.from('game_rooms').update({ game_state: newGs }).eq('code', code.toUpperCase());
-        setGameState(newGs);
+        await updateGameState(newGs);
         return;
       }
 
@@ -589,8 +647,7 @@ export default function GameBoard({ user, onLogout }) {
       }
 
       const updated = advanceTurn(newGs);
-      await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
-      setGameState(updated);
+      await updateGameState(updated);
 
     } catch (err) {
       console.error('Bot error:', err);
@@ -603,26 +660,30 @@ export default function GameBoard({ user, onLogout }) {
 
   const handleRevealCard = async (cardIndex) => {
     if (!gameState || gameState.phase !== 'initial_reveal') return;
-    const myPlayerIdx = gameState.players.findIndex(p => p.user_id === user.id);
-    if (myPlayerIdx === -1) return;
+    const me = gameState.players.find(p => p.user_id === user.id);
+    if (!me || me.revealed_cards?.includes(cardIndex)) return;
 
-    const myPlayer = gameState.players[myPlayerIdx];
-    if (myPlayer.revealed_cards?.includes(cardIndex)) return;
-
-    const newGs = JSON.parse(JSON.stringify(gameState));
-    if (!newGs.players[myPlayerIdx].revealed_cards) {
-      newGs.players[myPlayerIdx].revealed_cards = [];
-    }
-    newGs.players[myPlayerIdx].revealed_cards.push(cardIndex);
-
-    const allReady = newGs.players.every(p => {
-      if (p.is_bot) return true;
-      return (p.revealed_cards?.length || 0) >= newGs.cards_to_reveal;
+    // Mutation concurrente : deux joueurs peuvent révéler en même temps
+    const ok = await mutateGameState((gs) => {
+      if (gs.phase !== 'initial_reveal') return null;
+      const idx = gs.players.findIndex(p => p.user_id === user.id);
+      if (idx === -1) return null;
+      const p = gs.players[idx];
+      if (!p.revealed_cards) p.revealed_cards = [];
+      if (p.revealed_cards.includes(cardIndex)) return null;
+      if (p.revealed_cards.length >= gs.cards_to_reveal) return null;
+      p.revealed_cards.push(cardIndex);
+      return gs;
     });
+    if (!ok) return;
+
+    // L'état frais écrit dit si tout le monde est prêt
+    const fresh = gameStateRef.current;
+    const allReady = fresh && fresh.phase === 'initial_reveal' &&
+      fresh.players.every(p =>
+        p.is_bot || (p.revealed_cards?.length || 0) >= fresh.cards_to_reveal);
 
     if (allReady) {
-      await updateGameState(newGs);
-
       toast.info('Mémorisez vos cartes! Démarrage dans 3 secondes...');
       setRevealTimer(3);
 
@@ -630,17 +691,18 @@ export default function GameBoard({ user, onLogout }) {
         setRevealTimer(prev => {
           if (prev <= 1) {
             clearInterval(revealTimerRef.current);
-            const finalGs = JSON.parse(JSON.stringify(newGs));
-            finalGs.phase = 'playing';
-            updateGameState(finalGs);
-            toast.success('La partie commence!');
+            mutateGameState((gs) => {
+              if (gs.phase !== 'initial_reveal') return null;
+              gs.phase = 'playing';
+              return gs;
+            }).then((started) => {
+              if (started) toast.success('La partie commence!');
+            });
             return 0;
           }
           return prev - 1;
         });
       }, 1000);
-    } else {
-      await updateGameState(newGs);
     }
   };
 
@@ -714,55 +776,66 @@ export default function GameBoard({ user, onLogout }) {
   };
 
   const handleFastDiscard = async (cardIndex, targetPlayer = null, targetCardIndex = null) => {
+    if (gameState.phase !== 'playing') return;
     if (!gameState.discard_pile || gameState.discard_pile.length === 0) return;
-    const newGs = JSON.parse(JSON.stringify(gameState));
-    const topCard = newGs.discard_pile[newGs.discard_pile.length - 1];
-    const myPlayerIdx = newGs.players.findIndex(p => p.user_id === user.id);
 
-    if (targetPlayer) {
-      const targetIdx = newGs.players.findIndex(p => p.user_id === targetPlayer);
-      const card = newGs.players[targetIdx].hand[targetCardIndex];
-      if (card && card.value === topCard.value) {
-        removeCardKeepMemory(newGs.players[targetIdx], targetCardIndex);
-        newGs.discard_pile.push(card);
-        if (newGs.players[targetIdx].hand.length === 0) {
-          const finished = endRound(newGs);
-          await updateGameState(finished);
-          toast.success('Slam réussi!');
-          return;
+    // Le slam est l'action la plus concurrente du jeu : tout est revalidé
+    // sur l'état frais (le sommet de la défausse a pu changer entre-temps).
+    let result = null; // 'slam' | 'perfect' | 'missed'
+
+    await mutateGameState((gs) => {
+      if (gs.phase !== 'playing') return null;
+      if (!gs.discard_pile || gs.discard_pile.length === 0) return null;
+      const topCard = gs.discard_pile[gs.discard_pile.length - 1];
+      const myPlayerIdx = gs.players.findIndex(p => p.user_id === user.id);
+      if (myPlayerIdx === -1) return null;
+
+      if (targetPlayer) {
+        const targetIdx = gs.players.findIndex(p => p.user_id === targetPlayer);
+        if (targetIdx === -1) return null;
+        const card = gs.players[targetIdx].hand[targetCardIndex];
+        if (card && card.value === topCard.value) {
+          removeCardKeepMemory(gs.players[targetIdx], targetCardIndex);
+          gs.discard_pile.push(card);
+          if (gs.players[targetIdx].hand.length === 0) {
+            result = 'slam';
+            return endRound(gs);
+          }
+          gs.pending_give_card = { from_player: user.id, to_player: targetPlayer };
+          result = 'slam';
+        } else {
+          if (gs.deck && gs.deck.length > 0) {
+            gs.players[myPlayerIdx].hand.push(gs.deck.pop());
+          }
+          result = 'missed';
         }
-        newGs.pending_give_card = { from_player: user.id, to_player: targetPlayer };
-        toast.success('Slam réussi!');
       } else {
-        if (newGs.deck && newGs.deck.length > 0) {
-          newGs.players[myPlayerIdx].hand.push(newGs.deck.pop());
+        const card = gs.players[myPlayerIdx].hand[cardIndex];
+        if (card && card.value === topCard.value) {
+          removeCardKeepMemory(gs.players[myPlayerIdx], cardIndex);
+          gs.discard_pile.push(card);
+          if (gs.players[myPlayerIdx].hand.length === 0) {
+            // Perfect Cactus : main vidée par défausse rapide
+            gs.cactus_called = true;
+            gs.cactus_caller = user.id;
+            gs.perfect_cactus_players = [...(gs.perfect_cactus_players || []), user.id];
+            result = 'perfect';
+            return endRound(gs);
+          }
+          result = 'slam';
+        } else {
+          if (gs.deck && gs.deck.length > 0) {
+            gs.players[myPlayerIdx].hand.push(gs.deck.pop());
+          }
+          result = 'missed';
         }
-        toast.error('Slam raté! +1 carte');
       }
-    } else {
-      const card = newGs.players[myPlayerIdx].hand[cardIndex];
-      if (card && card.value === topCard.value) {
-        removeCardKeepMemory(newGs.players[myPlayerIdx], cardIndex);
-        newGs.discard_pile.push(card);
-        if (newGs.players[myPlayerIdx].hand.length === 0) {
-          // Perfect Cactus : main vidée par défausse rapide
-          newGs.cactus_called = true;
-          newGs.cactus_caller = user.id;
-          newGs.perfect_cactus_players = [...(newGs.perfect_cactus_players || []), user.id];
-          const finished = endRound(newGs);
-          await updateGameState(finished);
-          toast.success('Perfect Cactus! 🌵⭐');
-          return;
-        }
-        toast.success('Slam réussi!');
-      } else {
-        if (newGs.deck && newGs.deck.length > 0) {
-          newGs.players[myPlayerIdx].hand.push(newGs.deck.pop());
-        }
-        toast.error('Slam raté! +1 carte');
-      }
-    }
-    await updateGameState(newGs);
+      return gs;
+    });
+
+    if (result === 'perfect') toast.success('Perfect Cactus! 🌵⭐');
+    else if (result === 'slam') toast.success('Slam réussi!');
+    else if (result === 'missed') toast.error('Slam raté! +1 carte');
   };
 
   const handleCallCactus = async () => {
@@ -869,8 +942,7 @@ export default function GameBoard({ user, onLogout }) {
     newGs.awaiting_special_action = false;
 
     const updated = advanceTurn(newGs);
-    await supabase.from('game_rooms').update({ game_state: updated }).eq('code', code.toUpperCase());
-    setGameState(updated);
+    await updateGameState(updated);
   };
 
   const handleSkipSpecial = async () => {
@@ -880,16 +952,20 @@ export default function GameBoard({ user, onLogout }) {
   };
 
   const handleGiveCard = async (cardIndex) => {
-    const newGs = JSON.parse(JSON.stringify(gameState));
-    const myPlayerIdx = newGs.players.findIndex(p => p.user_id === user.id);
-    const targetIdx = newGs.players.findIndex(p => p.user_id === newGs.pending_give_card.to_player);
+    await mutateGameState((gs) => {
+      // Revalider que le don est toujours attendu et vient bien de moi
+      if (!gs.pending_give_card || gs.pending_give_card.from_player !== user.id) return null;
+      const myPlayerIdx = gs.players.findIndex(p => p.user_id === user.id);
+      const targetIdx = gs.players.findIndex(p => p.user_id === gs.pending_give_card.to_player);
+      if (myPlayerIdx === -1 || targetIdx === -1) return null;
+      if (!gs.players[myPlayerIdx].hand[cardIndex]) return null;
 
-    const card = removeCardKeepMemory(newGs.players[myPlayerIdx], cardIndex);
-    // La carte reçue est inconnue du destinataire : pas d'ajout à sa mémoire
-    newGs.players[targetIdx].hand.push(card);
-    newGs.pending_give_card = null;
-
-    await updateGameState(newGs);
+      const card = removeCardKeepMemory(gs.players[myPlayerIdx], cardIndex);
+      // La carte reçue est inconnue du destinataire : pas d'ajout à sa mémoire
+      gs.players[targetIdx].hand.push(card);
+      gs.pending_give_card = null;
+      return gs;
+    });
   };
 
   if (loading || !gameState) {

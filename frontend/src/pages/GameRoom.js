@@ -26,40 +26,55 @@ export default function GameRoom({ user, onLogout }) {
   }, [code]);
 
   const fetchRoom = async () => {
-    const { data, error } = await supabase
-      .from('game_rooms')
-      .select('*')
-      .eq('code', code.toUpperCase())
-      .single();
+    // Jointure avec verrou optimiste : deux joueurs peuvent arriver en même
+    // temps sans s'effacer mutuellement de la liste (game_state._v).
+    let roomData = null;
 
-    if (error || !data) {
-      toast.error('Salle introuvable');
-      navigate('/lobby');
-      return;
-    }
-
-    let roomData = data;
-    const players = data.game_state?.players || [];
-    const alreadyIn = players.find(p => p.user_id === user.id);
-
-    if (!alreadyIn) {
-      const newPlayers = [...players, {
-        user_id: user.id,
-        username: user.username,
-        is_ready: false
-      }];
-
-      // .select() renvoie la ligne mise à jour : l'état local inclut
-      // immédiatement le joueur, sans dépendre de l'événement realtime
-      const { data: updatedRoom } = await supabase
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const { data, error } = await supabase
         .from('game_rooms')
-        .update({ game_state: { ...data.game_state, players: newPlayers } })
+        .select('*')
         .eq('code', code.toUpperCase())
-        .select()
         .single();
 
-      if (updatedRoom) roomData = updatedRoom;
+      if (error || !data) {
+        toast.error('Salle introuvable');
+        navigate('/lobby');
+        return;
+      }
+
+      roomData = data;
+      const players = data.game_state?.players || [];
+      if (players.find(p => p.user_id === user.id) || data.state === 'playing') break;
+
+      const baseVersion = data.game_state?._v || 0;
+      const newState = {
+        ...data.game_state,
+        players: [...players, {
+          user_id: user.id,
+          username: user.username,
+          is_ready: false
+        }],
+        _v: baseVersion + 1
+      };
+
+      let query = supabase
+        .from('game_rooms')
+        .update({ game_state: newState })
+        .eq('code', code.toUpperCase());
+      query = baseVersion > 0
+        ? query.eq('game_state->>_v', String(baseVersion))
+        : query.is('game_state->>_v', null);
+
+      const { data: updatedRows } = await query.select();
+      if (updatedRows && updatedRows.length > 0) {
+        roomData = updatedRows[0];
+        break;
+      }
+      // Conflit (quelqu'un a rejoint en même temps) : on réessaie
     }
+
+    if (!roomData) return;
 
     if (roomData.state === 'playing') {
       navigate(`/game/${code}`);
@@ -133,6 +148,7 @@ export default function GameRoom({ user, onLogout }) {
         round_score: 0
       }));
 
+      const baseVersion = (freshRoom || room).game_state?._v || 0;
       const gameState = {
         deck,
         discard_pile: [deck.splice(0, 1)[0]],
@@ -144,16 +160,28 @@ export default function GameRoom({ user, onLogout }) {
         drawn_card: null,
         cactus_called: false,
         cactus_caller: null,
-        remaining_final_turns: 0
+        remaining_final_turns: 0,
+        _v: baseVersion + 1
       };
 
-      await supabase
+      // Écriture avec verrou optimiste : si quelqu'un rejoint pile au même
+      // moment, on ne l'écrase pas — le créateur relance simplement.
+      let query = supabase
         .from('game_rooms')
         .update({
           state: 'playing',
           game_state: gameState
         })
         .eq('code', code.toUpperCase());
+      query = baseVersion > 0
+        ? query.eq('game_state->>_v', String(baseVersion))
+        : query.is('game_state->>_v', null);
+
+      const { data: updatedRows } = await query.select('code');
+      if (!updatedRows || updatedRows.length === 0) {
+        toast.error('Un joueur vient de rejoindre — relancez la partie');
+        return;
+      }
 
       toast.success('Partie lancée!');
       navigate(`/game/${code}`);
