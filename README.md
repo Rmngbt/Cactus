@@ -1,162 +1,75 @@
-# 🌵 Cactus - Jeu Multijoueur
+# 🌵 Cactus — Jeu de cartes multijoueur
 
-Jeu de cartes multijoueur en temps réel accessible via navigateur web.
-
-## 🚀 Démarrage rapide
-
-### Prérequis
-- Node.js 18+
-- Python 3.11+
-- MongoDB
-- Yarn
-
-### Installation
-
-1. **Backend**
-```bash
-cd /app/backend
-pip install -r requirements.txt
-```
-
-2. **Frontend**
-```bash
-cd /app/frontend
-yarn install
-```
-
-3. **Configuration**
-
-Créez `/app/backend/.env`:
-```env
-MONGO_URL="mongodb://localhost:27017"
-DB_NAME="cactus_game_db"
-CORS_ORIGINS="*"
-JWT_SECRET_KEY="your-secret-key-here"
-RESEND_API_KEY=""  # Optionnel
-SENDER_EMAIL="onboarding@resend.dev"  # Optionnel
-```
-
-Créez `/app/frontend/.env`:
-```env
-REACT_APP_BACKEND_URL=http://localhost:8001
-```
-
-### Lancement
-
-**Avec Supervisor (recommandé):**
-```bash
-sudo supervisorctl restart backend frontend
-sudo supervisorctl status
-```
-
-**Manuellement:**
-```bash
-# Terminal 1 - Backend
-cd /app/backend
-uvicorn server:app --host 0.0.0.0 --port 8001 --reload
-
-# Terminal 2 - Frontend
-cd /app/frontend
-yarn start
-```
-
-### Accès
-- Frontend : http://localhost:3000
-- Backend API : http://localhost:8001
-- Documentation API : http://localhost:8001/docs
-
----
+Jeu de cartes multijoueur en temps réel, jouable dans le navigateur. Mémorisez vos cartes, faites des défausses rapides (slams), et annoncez « Cactus ! » quand vous pensez avoir le score le plus bas.
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────┐     WebSocket     ┌─────────────┐
-│   Frontend  │ ←──────────────→ │   Backend   │
-│   (React)   │   HTTP/REST API   │  (FastAPI)  │
-└─────────────┘                   └─────────────┘
-                                         │
-                                         ↓
-                                  ┌─────────────┐
-                                  │   MongoDB   │
-                                  └─────────────┘
+React (hébergé sur Vercel) ──► Supabase (Auth + Postgres + Realtime)
 ```
 
-### Stack technique
+- **Frontend** : React 18 (Create React App + Craco), Tailwind CSS + shadcn/ui, Chart.js
+- **Backend** : aucun serveur applicatif — le frontend parle directement à Supabase
+  - **Auth** : comptes email/mot de passe, connexion par pseudo (RPC), récupération de mot de passe
+  - **Base** : Postgres avec Row Level Security (tables `profiles`, `stats`, `game_rooms`)
+  - **Temps réel** : synchronisation des parties via Supabase Realtime (`postgres_changes`)
+- **Concurrence** : l'état de partie (`game_rooms.game_state`) est protégé par un verrou optimiste (`_v`) — les actions simultanées ne s'écrasent pas
 
-**Frontend:**
-- React 19
-- React Router pour navigation
-- Axios pour API calls
-- WebSocket pour temps réel
-- Shadcn/UI + Tailwind CSS
-- Chart.js pour statistiques
+## 🚀 Développement local
 
-**Backend:**
-- FastAPI (Python)
-- Motor (MongoDB async)
-- WebSocket natif
-- JWT pour authentification
-- Resend pour emails
-- Bcrypt pour mots de passe
+Prérequis : Node.js 18+, Yarn.
 
-**Base de données:**
-- MongoDB avec collections:
-  - `users` : Comptes utilisateurs
-  - `game_rooms` : Salles de jeu
-  - `game_rules` : Règles configurables
-  - `admin_settings` : Paramètres admin
+```bash
+cd frontend
+yarn install
+```
 
----
+Créez `frontend/.env.local` :
 
-## 🎮 Fonctionnalités implémentées
+```env
+REACT_APP_SUPABASE_URL=https://votre-projet.supabase.co
+REACT_APP_SUPABASE_ANON_KEY=votre_cle_anon
+```
 
-✅ Authentification complète (inscription, connexion, récupération mot de passe)
-✅ Création et gestion de parties multijoueurs en temps réel
-✅ Mode bot avec 3 niveaux de difficulté
-✅ Règles configurables par l'administrateur sans modifier le code
-✅ Statistiques utilisateur avec graphiques
-✅ Panneau d'administration
-✅ Interface responsive avec thème désertique
-✅ Session persistante (reconnexion automatique)
-✅ WebSocket pour synchronisation temps réel
+Puis :
 
----
+```bash
+yarn start     # http://localhost:3000
+```
 
-## 📖 Documentation
+## 🗄️ Base de données
 
-- **Guide utilisateur complet** : voir `GUIDE_UTILISATEUR.md`
-- **Documentation API** : http://localhost:8001/docs (une fois lancé)
+Le schéma complet (tables, policies RLS, fonctions, realtime) est versionné dans
+[`supabase/schema_complet.sql`](supabase/schema_complet.sql).
+Pour initialiser un nouveau projet Supabase : SQL Editor → coller le script → Run.
 
----
+Pour rendre un compte administrateur (une fois inscrit via le site) :
 
-## 🌐 Hébergement actuel
+```sql
+update profiles set is_admin = true where username = 'VotrePseudo';
+```
 
-**URL** : https://cactus-build.preview.emergentagent.com
+## ☁️ Déploiement
 
-L'application est déployée et fonctionnelle !
+- **Vercel** : projet connecté à ce repo, *Root Directory* = `frontend`.
+  Variables d'environnement à définir dans le dashboard :
+  `REACT_APP_SUPABASE_URL` et `REACT_APP_SUPABASE_ANON_KEY`.
+- **Anti-pause Supabase** : le workflow GitHub Actions
+  [`supabase-keepalive.yml`](.github/workflows/supabase-keepalive.yml) pinge la base
+  2 fois par semaine (secrets GitHub requis : `SUPABASE_URL`, `SUPABASE_ANON_KEY`).
 
----
+## 🎮 Règles du jeu
 
-## 🔧 Configuration Email (Optionnel)
+- Chaque joueur reçoit N cartes face cachée et n'en mémorise que quelques-unes au début.
+- **Valeurs** : Roi = 0, As = 1, le 2 = **-2**, cartes 3-10 = valeur faciale, Valet/Dame = 10.
+- À votre tour : piochez (pioche ou défausse), puis échangez avec une de vos cartes ou défaussez.
+- **Cartes spéciales** (quand elles arrivent sur la défausse) : 8 = regarder une de ses cartes, 10 = regarder une carte adverse, Valet = échanger une carte avec un adversaire.
+- **Slam (défausse rapide)** : à tout moment, défaussez une carte identique au sommet de la défausse. Sur la carte d'un adversaire : vous lui donnez ensuite une de vos cartes. Slam raté = +1 carte de pénalité.
+- **Cactus** : annoncez quand vous pensez avoir le score le plus bas — chacun joue un dernier tour. Cactus raté = **+10 points** de pénalité. Vider sa main = **Perfect Cactus**.
+- Le score le plus bas gagne. Parties en plusieurs manches avec score cible configurables.
 
-Pour activer la récupération de mot de passe par email :
+Guide complet : [`GUIDE_UTILISATEUR.md`](GUIDE_UTILISATEUR.md)
 
-1. Créez un compte sur [Resend.com](https://resend.com) (gratuit)
-2. Obtenez votre clé API
-3. Ajoutez dans `/app/backend/.env`:
-   ```
-   RESEND_API_KEY=re_votre_cle_ici
-   ```
-4. Redémarrez : `sudo supervisorctl restart backend`
+## 📋 Audit & historique
 
----
-
-## 📝 Notes
-
-- Le jeu fonctionne parfaitement sans configuration email
-- Pour créer un compte admin : modifier `is_admin: true` en base MongoDB
-- Les tokens JWT expirent après 30 minutes
-
----
-
-Pour plus d'informations, consultez **GUIDE_UTILISATEUR.md** 🎮
+Un audit complet du code (sécurité, bugs, dette technique) est disponible dans [`AUDIT.md`](AUDIT.md).

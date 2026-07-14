@@ -4,7 +4,7 @@ Bienvenue dans le jeu multijoueur **Cactus** ! Ce guide vous explique comment ut
 
 ## 📍 URL de l'application
 
-Votre jeu est accessible à l'adresse : **https://cactus-build.preview.emergentagent.com**
+Le jeu est hébergé sur Vercel : **https://cactus-six-mocha.vercel.app**
 
 ---
 
@@ -22,7 +22,7 @@ Votre jeu est accessible à l'adresse : **https://cactus-build.preview.emergenta
 
 ### 2. Se connecter
 
-1. Entrez votre **email** et **mot de passe**
+1. Entrez votre **email ou votre pseudo** et votre **mot de passe**
 2. Cliquez sur **"Se connecter"**
 3. Si vous avez oublié votre mot de passe, cliquez sur **"Mot de passe oublié?"**
 
@@ -33,8 +33,9 @@ Votre jeu est accessible à l'adresse : **https://cactus-build.preview.emergenta
    - **Mode** : Multijoueur (contre amis) ou Bot (contre ordinateur)
    - **Difficulté du bot** : Facile, Moyen ou Difficile (si mode Bot)
    - **Cartes par joueur** : 3 à 6 cartes
-   - **Cartes visibles au début** : combien de cartes vous pouvez voir initialement
-   - **Score cible** : score à atteindre pour terminer (30-100)
+   - **Cartes visibles au début** : combien de cartes vous mémorisez au départ
+   - **Score cible** : la partie s'arrête quand un joueur l'atteint (30-100)
+   - **Nombre de manches** : 1 à 10
 3. Cliquez sur **"Créer la partie"**
 4. Un **code unique** (ex: ABC123) est généré
 5. **Partagez ce code** avec vos amis pour qu'ils rejoignent
@@ -49,7 +50,10 @@ Votre jeu est accessible à l'adresse : **https://cactus-build.preview.emergenta
 ### 5. Jouer
 
 #### Objectif du jeu
-Avoir le **score le plus bas** à la fin de chaque manche !
+Avoir le **score le plus bas** à la fin de la partie !
+
+#### Début de manche
+Cliquez sur le nombre de cartes demandé pour les **mémoriser** — vous avez 3 secondes avant qu'elles se retournent. Ensuite, vous jouez de mémoire !
 
 #### Votre tour :
 1. **Piocher** :
@@ -57,7 +61,7 @@ Avoir le **score le plus bas** à la fin de chaque manche !
    - Cliquez sur la **défausse** (pile face visible)
 
 2. **Échanger** :
-   - Cliquez sur l'icône **poubelle** au-dessus d'une de vos cartes
+   - Cliquez sur l'icône **échange** sous une de vos cartes
    - La carte piochée remplace votre carte
    - Votre ancienne carte va à la défausse
 
@@ -65,22 +69,30 @@ Avoir le **score le plus bas** à la fin de chaque manche !
    - Cliquez sur **"Défausser"** sous la carte piochée
    - Le tour passe au joueur suivant
 
-#### Actions spéciales :
-- **Œil** 👁️ : Voir une de vos cartes (elles sont cachées)
-- **Défausse rapide** 🗑️ : Si vous avez la même carte que la défausse, cliquez sur la poubelle pour la jeter rapidement
-- **Cartes spéciales** :
-  - **8** : Regarder une carte d'un adversaire
-  - **10** : Échanger une de vos cartes avec celle d'un adversaire
-  - **J (Valet)** : Regarder une de vos propres cartes
+#### Cartes spéciales ✨
+Quand une carte spéciale arrive sur la défausse (piochée puis défaussée, ou sortie de votre main lors d'un échange), son pouvoir se déclenche :
+- **8** : Regarder une de **VOS** cartes
+- **10** : Regarder une carte d'un **ADVERSAIRE**
+- **Valet (J)** : **Échanger** une de vos cartes avec celle d'un adversaire (à l'aveugle)
 
-#### Appeler Cactus 🌵 :
+#### Défausse rapide (Slam) ⚡
+**À n'importe quel moment**, si une carte identique au sommet de la défausse se trouve dans votre main (ou celle d'un adversaire !), cliquez sur l'icône poubelle pour la slammer :
+- Slam de **votre** carte : elle part à la défausse, une carte de moins !
+- Slam d'une carte **adverse** : elle part à la défausse, puis vous **donnez une de vos cartes** à l'adversaire
+- **Slam raté** (la carte ne correspondait pas) : vous piochez **une carte de pénalité**
+- Le bot aussi surveille la défausse... et peut vous slammer sous le nez !
+
+#### Appeler Cactus 🌵
 - Quand vous pensez avoir le meilleur score, cliquez sur **"🌵 Cactus!"**
-- Tous les joueurs font un dernier tour
-- Les cartes sont révélées et le score est calculé
+- Tous les autres joueurs font un dernier tour
+- Les scores sont calculés
+- ⚠️ Si vous n'avez **pas** le score le plus bas : **+10 points de pénalité !**
 
-#### Perfect Cactus ⭐ :
-- Si vous parvenez à défausser **toutes vos cartes** via la défausse rapide
-- C'est un **Perfect Cactus** - vous gagnez automatiquement la manche !
+#### Perfect Cactus ⭐
+Si vous parvenez à vider **toutes vos cartes** via la défausse rapide, c'est un **Perfect Cactus** : la manche s'arrête immédiatement et votre score est de 0 !
+
+#### Manches multiples
+Si la partie est configurée en plusieurs manches, les scores se cumulent de manche en manche. La partie s'arrête quand toutes les manches sont jouées ou qu'un joueur atteint le score cible. Le total le plus bas gagne !
 
 ### 6. Voir vos statistiques
 
@@ -101,44 +113,29 @@ Cliquez sur **"Déconnexion"** en haut à droite du lobby
 
 ## 👑 Pour les Administrateurs
 
-### Accéder au panneau admin
+### Devenir administrateur
 
-1. Votre compte doit avoir les droits admin (configurable en base de données)
-2. Dans le lobby, cliquez sur **"Admin"**
+Les droits admin s'attribuent en base de données (Supabase → SQL Editor) :
 
-### Modifier les règles du jeu
+```sql
+update profiles set is_admin = true where username = 'VotrePseudo';
+```
 
-1. Allez dans l'onglet **"Règles"**
-2. Ajustez les paramètres :
-   - **Cartes par joueur** : 3-6
-   - **Cartes visibles au début** : 1-4
-   - **Score cible** : 30-100
-   - **Délai de visibilité** : 1-10 secondes
-3. Cliquez sur **"Sauvegarder les règles"**
-4. Les nouvelles règles s'appliquent aux prochaines parties
+Un administrateur peut ensuite promouvoir d'autres joueurs depuis l'application.
 
-### Modifier l'apparence
+### Le panneau admin
 
-1. Allez dans l'onglet **"Apparence"**
-2. Changez l'**image de fond** (URL)
-3. Aperçu disponible avant sauvegarde
-4. Cliquez sur **"Sauvegarder l'apparence"**
-
-### Voir les statistiques globales
-
-1. Allez dans l'onglet **"Statistiques"**
-2. Consultez :
-   - Nombre total d'utilisateurs inscrits
-   - Nombre total de parties jouées
-   - Nombre total de Perfect Cactus réalisés
+1. Dans le lobby, cliquez sur **"Admin"**
+2. Onglet **Utilisateurs** : liste des joueurs, promotion/révocation des droits admin
+3. Onglet **Statistiques** : utilisateurs inscrits, parties jouées, Perfect Cactus totaux
 
 ---
 
 ## 🎯 Valeurs des cartes
 
-- **Roi (K)** : 0 points (meilleure carte!)
+- **Roi (K)** : 0 point (meilleure carte!)
 - **As (A)** : 1 point
-- **2** : -2 points (enlève 2 points!)
+- **2** : **-2 points** (enlève 2 points!)
 - **3 à 9** : valeur de la carte
 - **10** : 10 points
 - **Valet (J)** : 10 points
@@ -148,62 +145,34 @@ Cliquez sur **"Déconnexion"** en haut à droite du lobby
 
 ## 💡 Astuces
 
-1. **Mémorisez vos cartes** : Au début, vous pouvez voir quelques cartes - essayez de vous en souvenir !
-2. **Utilisez le 2** : Le 2 enlève 2 points de votre score - gardez-le !
-3. **Défausse rapide** : Soyez attentif à la défausse pour des coups rapides
-4. **N'appelez pas Cactus trop tôt** : Assurez-vous d'avoir un bon score
-5. **Cartes spéciales** : Utilisez-les stratégiquement pour voir ce que les autres ont
+1. **Mémorisez vos cartes** : Au début, vous voyez quelques cartes — retenez-les bien, elles se cachent ensuite !
+2. **Utilisez le 2** : Le 2 enlève 2 points de votre score — gardez-le !
+3. **Défausse rapide** : Surveillez la défausse en permanence pour slammer au bon moment
+4. **N'appelez pas Cactus trop tôt** : un Cactus raté coûte 10 points !
+5. **Cartes spéciales** : utilisez le 8 pour compléter votre mémoire, le 10 pour espionner, le Valet pour refiler votre pire carte
 
 ---
 
 ## 🛠️ Informations techniques
 
 ### Architecture
-- **Frontend** : React avec thème désertique
-- **Backend** : FastAPI avec WebSocket pour le temps réel
-- **Base de données** : MongoDB
-- **Temps réel** : WebSocket natif pour synchronisation multijoueur
+- **Frontend** : React (hébergé sur Vercel), thème désertique
+- **Backend** : Supabase (authentification, base Postgres, temps réel)
+- **Temps réel** : Supabase Realtime pour la synchronisation multijoueur
+- **Concurrence** : verrou optimiste sur l'état des parties (les actions simultanées ne se perdent pas)
 
 ### Fonctionnalités
-- ✅ Authentification sécurisée (JWT)
-- ✅ Récupération mot de passe par email (Resend)
-- ✅ Parties multijoueurs en temps réel
-- ✅ Mode bot avec 3 niveaux de difficulté
-- ✅ Règles configurables sans code
+- ✅ Authentification (email ou pseudo) et récupération de mot de passe
+- ✅ Parties multijoueurs en temps réel via un code à partager
+- ✅ Mode bot avec 3 niveaux de difficulté — le bot joue avec une mémoire limitée, comme vous !
+- ✅ Manches multiples et score cible configurables
 - ✅ Statistiques et graphiques
 - ✅ Interface responsive (PC, tablette, mobile)
-- ✅ Session persistante (reconnexion automatique)
 
-### Hébergement actuel
-- **URL** : https://cactus-build.preview.emergentagent.com
-- **Environnement** : Cloud Kubernetes
-- **Gratuit** : Oui, 100% gratuit
-
----
-
-## 🔧 Configuration Email (Pour récupération mot de passe)
-
-Pour activer l'envoi d'emails de récupération de mot de passe :
-
-1. Créez un compte sur **Resend.com** (gratuit, 10 000 emails/mois)
-2. Obtenez votre clé API
-3. Ajoutez-la dans `/app/backend/.env` :
-   ```
-   RESEND_API_KEY=re_votre_cle_ici
-   SENDER_EMAIL=votre@email.com
-   ```
-4. Redémarrez le backend : `sudo supervisorctl restart backend`
-
-**Note** : Sans configuration email, le jeu fonctionne normalement, seule la récupération de mot de passe est désactivée.
-
----
-
-## 📞 Support
-
-En cas de problème :
-1. Vérifiez que les services sont actifs : `sudo supervisorctl status`
-2. Consultez les logs backend : `tail -n 50 /var/log/supervisor/backend.err.log`
-3. Redémarrez les services si nécessaire : `sudo supervisorctl restart backend frontend`
+### En cas de problème
+1. Rechargez la page (Ctrl+Maj+R)
+2. Vérifiez que le projet Supabase est actif : https://supabase.com/dashboard
+3. Vérifiez le dernier déploiement sur Vercel : onglet *Deployments*
 
 ---
 
