@@ -1092,6 +1092,7 @@ export default function GameBoard({ user, onLogout }) {
   };
 
   const handleGiveCard = async (cardIndex) => {
+    let wentPerfect = false;
     await mutateGameState((gs) => {
       // Revalider que le don est toujours attendu et vient bien de moi
       if (!gs.pending_give_card || gs.pending_give_card.from_player !== user.id) return null;
@@ -1104,9 +1105,21 @@ export default function GameBoard({ user, onLogout }) {
       // La carte reçue est inconnue du destinataire : pas d'ajout à sa mémoire
       gs.players[targetIdx].hand.push(card);
       gs.pending_give_card = null;
+
+      // Donner sa dernière carte vide la main : Perfect Cactus !
+      if (gs.players[myPlayerIdx].hand.length === 0) {
+        gs.cactus_called = true;
+        gs.cactus_caller = user.id;
+        gs.perfect_cactus_players = [...(gs.perfect_cactus_players || []), user.id];
+        gs.pending_special_after_give = null;
+        wentPerfect = true;
+        return endRound(gs);
+      }
+
       activatePendingSpecial(gs);
       return gs;
     });
+    if (wentPerfect) toast.success('Perfect Cactus! 🌵⭐');
   };
 
   const handleSkipGive = async () => {
