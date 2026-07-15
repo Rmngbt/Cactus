@@ -4,7 +4,7 @@ Bienvenue dans le jeu multijoueur **Cactus** ! Ce guide vous explique comment ut
 
 ## 📍 URL de l'application
 
-Le jeu est hébergé sur Vercel : **https://cactus-six-mocha.vercel.app**
+Le jeu est hébergé sur Vercel : **https://cactus-game.vercel.app**
 
 ---
 
