@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { ArrowLeft, Save, Settings, BarChart, Users, Shield, ShieldOff } from 'lucide-react';
+import { ArrowLeft, Save, Settings, BarChart, Users, Shield, ShieldOff, RotateCcw } from 'lucide-react';
 
 export default function AdminPanel({ user, onLogout }) {
   const navigate = useNavigate();
@@ -48,6 +48,18 @@ export default function AdminPanel({ user, onLogout }) {
       toast.error('Erreur lors du chargement');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResetStats = async (userId, username) => {
+    if (!window.confirm(`Réinitialiser les statistiques de ${username} ? Cette action est irréversible.`)) return;
+    try {
+      const { error } = await supabase.rpc('reset_stats', { target_user: userId });
+      if (error) throw error;
+      toast.success(`Statistiques de ${username} réinitialisées`);
+      fetchData();
+    } catch (error) {
+      toast.error('Erreur lors de la réinitialisation');
     }
   };
 
@@ -129,26 +141,37 @@ export default function AdminPanel({ user, onLogout }) {
                         </div>
                       </div>
 
-                      {u.id !== user.id && (
+                      <div className="flex gap-2">
                         <Button
-                          onClick={() => handleToggleAdmin(u.id, u.is_admin)}
-                          variant={u.is_admin ? "destructive" : "default"}
+                          onClick={() => handleResetStats(u.id, u.username)}
+                          variant="outline"
                           size="sm"
                           className="desert-button"
                         >
-                          {u.is_admin ? (
-                            <>
-                              <ShieldOff className="mr-2 h-4 w-4" />
-                              Retirer admin
-                            </>
-                          ) : (
-                            <>
-                              <Shield className="mr-2 h-4 w-4" />
-                              Promouvoir admin
-                            </>
-                          )}
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                          Réinit. stats
                         </Button>
-                      )}
+                        {u.id !== user.id && (
+                          <Button
+                            onClick={() => handleToggleAdmin(u.id, u.is_admin)}
+                            variant={u.is_admin ? "destructive" : "default"}
+                            size="sm"
+                            className="desert-button"
+                          >
+                            {u.is_admin ? (
+                              <>
+                                <ShieldOff className="mr-2 h-4 w-4" />
+                                Retirer admin
+                              </>
+                            ) : (
+                              <>
+                                <Shield className="mr-2 h-4 w-4" />
+                                Promouvoir admin
+                              </>
+                            )}
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
