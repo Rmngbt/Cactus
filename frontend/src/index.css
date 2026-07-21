@@ -115,6 +115,32 @@ body:not(.admin-page) div[style*="position: fixed"][style*="right"] {
     animation: float 3s ease-in-out infinite;
 }
 
+/* Écran de victoire spécial (message personnalisé admin) */
+@keyframes confetti-fall {
+    0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(110vh) rotate(360deg); opacity: 0.85; }
+}
+
+@keyframes pop-in {
+    0% { transform: scale(0.5); opacity: 0; }
+    60% { transform: scale(1.08); opacity: 1; }
+    100% { transform: scale(1); }
+}
+
+.confetti-piece {
+    position: absolute;
+    top: -5vh;
+    font-size: 1.75rem;
+    animation-name: confetti-fall;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    pointer-events: none;
+}
+
+.win-message-pop {
+    animation: pop-in 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .card-flip {
     transition: transform 0.6s;
     transform-style: preserve-3d;

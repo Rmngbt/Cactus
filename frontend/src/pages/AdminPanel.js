@@ -7,13 +7,15 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { ArrowLeft, Save, Settings, BarChart, Users, Shield, ShieldOff, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Save, Settings, BarChart, Users, Shield, ShieldOff, RotateCcw, Sparkles } from 'lucide-react';
 
 export default function AdminPanel({ user, onLogout }) {
   const navigate = useNavigate();
   const [allUsers, setAllUsers] = useState([]);
   const [globalStats, setGlobalStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [winMessageDrafts, setWinMessageDrafts] = useState({});
+  const [savingMessageFor, setSavingMessageFor] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -39,6 +41,9 @@ export default function AdminPanel({ user, onLogout }) {
       ) || 0;
 
       setAllUsers(users || []);
+      setWinMessageDrafts(
+        Object.fromEntries((users || []).map(u => [u.id, u.win_message || '']))
+      );
       setGlobalStats({
         total_users: users?.length || 0,
         total_games: totalGames || 0,
@@ -60,6 +65,21 @@ export default function AdminPanel({ user, onLogout }) {
       fetchData();
     } catch (error) {
       toast.error('Erreur lors de la réinitialisation');
+    }
+  };
+
+  const handleSaveWinMessage = async (userId) => {
+    setSavingMessageFor(userId);
+    try {
+      const message = (winMessageDrafts[userId] || '').trim();
+      const { error } = await supabase.rpc('set_win_message', { target_user: userId, message });
+      if (error) throw error;
+      toast.success(message ? 'Message de victoire enregistré' : 'Message de victoire supprimé');
+      fetchData();
+    } catch (error) {
+      toast.error('Erreur lors de l\'enregistrement du message');
+    } finally {
+      setSavingMessageFor(null);
     }
   };
 
@@ -120,57 +140,89 @@ export default function AdminPanel({ user, onLogout }) {
               <CardContent>
                 <div className="space-y-3">
                   {allUsers.map((u) => (
-                    <div key={u.id} className="flex items-center justify-between p-4 bg-muted rounded-lg">
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-2">
-                          <span className="font-semibold">{u.username}</span>
-                          {u.is_admin && (
-                            <span className="text-xs bg-accent text-white px-2 py-1 rounded">
-                              <Shield className="inline h-3 w-3 mr-1" />
-                              Admin
-                            </span>
-                          )}
-                          {u.id === user.id && (
-                            <span className="text-xs bg-primary text-white px-2 py-1 rounded">
-                              Vous
-                            </span>
-                          )}
+                    <div key={u.id} className="p-4 bg-muted rounded-lg space-y-3">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex-1 min-w-[160px]">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-semibold">{u.username}</span>
+                            {u.is_admin && (
+                              <span className="text-xs bg-accent text-white px-2 py-1 rounded">
+                                <Shield className="inline h-3 w-3 mr-1" />
+                                Admin
+                              </span>
+                            )}
+                            {u.id === user.id && (
+                              <span className="text-xs bg-primary text-white px-2 py-1 rounded">
+                                Vous
+                              </span>
+                            )}
+                            {u.win_message && (
+                              <span className="text-xs bg-pink-500 text-white px-2 py-1 rounded">
+                                <Sparkles className="inline h-3 w-3 mr-1" />
+                                Message perso
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            Parties: {u.stats?.games_played || 0} | Victoires: {u.stats?.wins || 0}
+                          </div>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          Parties: {u.stats?.games_played || 0} | Victoires: {u.stats?.wins || 0}
-                        </div>
-                      </div>
 
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={() => handleResetStats(u.id, u.username)}
-                          variant="outline"
-                          size="sm"
-                          className="desert-button"
-                        >
-                          <RotateCcw className="mr-2 h-4 w-4" />
-                          Réinit. stats
-                        </Button>
-                        {u.id !== user.id && (
+                        <div className="flex gap-2">
                           <Button
-                            onClick={() => handleToggleAdmin(u.id, u.is_admin)}
-                            variant={u.is_admin ? "destructive" : "default"}
+                            onClick={() => handleResetStats(u.id, u.username)}
+                            variant="outline"
                             size="sm"
                             className="desert-button"
                           >
-                            {u.is_admin ? (
-                              <>
-                                <ShieldOff className="mr-2 h-4 w-4" />
-                                Retirer admin
-                              </>
-                            ) : (
-                              <>
-                                <Shield className="mr-2 h-4 w-4" />
-                                Promouvoir admin
-                              </>
-                            )}
+                            <RotateCcw className="mr-2 h-4 w-4" />
+                            Réinit. stats
                           </Button>
-                        )}
+                          {u.id !== user.id && (
+                            <Button
+                              onClick={() => handleToggleAdmin(u.id, u.is_admin)}
+                              variant={u.is_admin ? "destructive" : "default"}
+                              size="sm"
+                              className="desert-button"
+                            >
+                              {u.is_admin ? (
+                                <>
+                                  <ShieldOff className="mr-2 h-4 w-4" />
+                                  Retirer admin
+                                </>
+                              ) : (
+                                <>
+                                  <Shield className="mr-2 h-4 w-4" />
+                                  Promouvoir admin
+                                </>
+                              )}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-end gap-2 pt-2 border-t">
+                        <div className="flex-1 space-y-1">
+                          <Label htmlFor={`win-msg-${u.id}`} className="text-xs flex items-center gap-1">
+                            <Sparkles className="h-3 w-3" />
+                            Message de victoire personnalisé
+                          </Label>
+                          <Input
+                            id={`win-msg-${u.id}`}
+                            placeholder="Ex: Bravo mon cœur, tu as gagné, trop forte ! 💖"
+                            value={winMessageDrafts[u.id] ?? ''}
+                            onChange={(e) => setWinMessageDrafts(prev => ({ ...prev, [u.id]: e.target.value }))}
+                            className="text-sm"
+                          />
+                        </div>
+                        <Button
+                          onClick={() => handleSaveWinMessage(u.id)}
+                          disabled={savingMessageFor === u.id}
+                          size="sm"
+                          className="desert-button bg-accent hover:bg-accent/90"
+                        >
+                          <Save className="h-4 w-4" />
+                        </Button>
                       </div>
                     </div>
                   ))}

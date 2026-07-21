@@ -83,6 +83,7 @@ export default function GameBoard({ user, onLogout }) {
   const [botRevealMessage, setBotRevealMessage] = useState(null);
   const [botActionLog, setBotActionLog] = useState([]);
   const [revealTimer, setRevealTimer] = useState(0);
+  const [winMessages, setWinMessages] = useState({});
   const channelRef = useRef(null);
   const countdownRef = useRef(null);
   const revealTimerRef = useRef(null);
@@ -107,11 +108,25 @@ export default function GameBoard({ user, onLogout }) {
     if (gameState?.phase === 'ended' && !statsUpdatedRef.current) {
       statsUpdatedRef.current = true;
       updateStats(gameState);
+      fetchWinMessages(gameState);
     } else if (gameState && gameState.phase !== 'ended') {
       // Une revanche a démarré : réarmer l'enregistrement des stats
       statsUpdatedRef.current = false;
+      if (Object.keys(winMessages).length > 0) setWinMessages({});
     }
   }, [gameState]);
+
+  // Message de victoire personnalisé (réglé par un admin) : lu sur les
+  // profils des joueurs humains au moment où la partie se termine.
+  const fetchWinMessages = async (gs) => {
+    const ids = gs.players.filter(p => !p.is_bot).map(p => p.user_id);
+    if (ids.length === 0) return;
+    const { data } = await supabase.from('profiles').select('id, win_message').in('id', ids);
+    if (!data) return;
+    const map = {};
+    data.forEach(p => { if (p.win_message) map[p.id] = p.win_message; });
+    setWinMessages(map);
+  };
 
   useEffect(() => {
     roomRef.current = room;
@@ -1550,18 +1565,59 @@ export default function GameBoard({ user, onLogout }) {
             const history = gameState.rounds_history || [];
             const winsOf = (uid) => history.filter(h => h.winner_ids?.includes(uid)).length;
 
+            // Message de victoire personnalisé (réglé par un admin) :
+            // seulement si un seul vainqueur (pas d'égalité)
+            const specialMessage = winners.length === 1 ? winMessages[winners[0].user_id] : null;
+            const confettiEmojis = ['🎉', '🌵', '⭐', '💖', '✨'];
+
             return (
-              <div className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 p-4">
-                <Card className="w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl">
+              <div className={`fixed inset-0 flex items-center justify-center z-50 p-4 overflow-hidden ${
+                specialMessage ? 'bg-gradient-to-br from-pink-500/80 via-purple-500/80 to-orange-400/80' : 'bg-black/75'
+              }`}>
+                {specialMessage && (
+                  <div className="absolute inset-0 pointer-events-none">
+                    {Array.from({ length: 28 }).map((_, i) => (
+                      <span
+                        key={i}
+                        className="confetti-piece"
+                        style={{
+                          left: `${(i * 37) % 100}%`,
+                          animationDelay: `${(i % 8) * 0.3}s`,
+                          animationDuration: `${3 + (i % 5) * 0.4}s`
+                        }}
+                      >
+                        {confettiEmojis[i % confettiEmojis.length]}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <Card className={`w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl relative ${specialMessage ? 'win-message-pop border-4 border-pink-300' : ''}`}>
                   <CardContent className="p-6 text-center space-y-4">
-                    <div className="text-6xl">{iWon ? '🎉' : '🏆'}</div>
-                    <div className="text-3xl font-bold" style={{ fontFamily: 'Fredoka, sans-serif' }}>
-                      {iWon
-                        ? 'Vous avez gagné!'
-                        : winners.length > 1
-                          ? 'Égalité!'
-                          : `${winners[0]?.username} a gagné!`}
-                    </div>
+                    {specialMessage ? (
+                      <>
+                        <div className="text-6xl animate-pulse">💖🎉💖</div>
+                        <div
+                          className="text-2xl font-bold text-pink-600"
+                          style={{ fontFamily: 'Fredoka, sans-serif' }}
+                        >
+                          {specialMessage}
+                        </div>
+                        <div className="text-lg font-semibold text-muted-foreground">
+                          {winners[0]?.username} remporte la partie 🏆
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-6xl">{iWon ? '🎉' : '🏆'}</div>
+                        <div className="text-3xl font-bold" style={{ fontFamily: 'Fredoka, sans-serif' }}>
+                          {iWon
+                            ? 'Vous avez gagné!'
+                            : winners.length > 1
+                              ? 'Égalité!'
+                              : `${winners[0]?.username} a gagné!`}
+                        </div>
+                      </>
+                    )}
                     <div className="text-muted-foreground">
                       Partie terminée en {history.length || gameState.round} manche{(history.length || gameState.round) > 1 ? 's' : ''}
                     </div>
